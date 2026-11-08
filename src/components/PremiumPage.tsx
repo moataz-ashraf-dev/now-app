@@ -45,13 +45,20 @@ const displayMonthlyPrice = String(import.meta.env.VITE_PREMIUM_MONTHLY_DISPLAY_
 const displayYearlyPrice = String(import.meta.env.VITE_PREMIUM_YEARLY_DISPLAY_EGP ?? '').trim();
 
 const GEM_PACKS = [
-  { id: 'gems_120', gems: 120, display: String(import.meta.env.VITE_GEMS_PACK_120_DISPLAY_EGP ?? '49').trim() },
-  { id: 'gems_300', gems: 300, display: String(import.meta.env.VITE_GEMS_PACK_300_DISPLAY_EGP ?? '99').trim() },
-  { id: 'gems_700', gems: 700, display: String(import.meta.env.VITE_GEMS_PACK_700_DISPLAY_EGP ?? '199').trim() },
-  { id: 'gems_1600', gems: 1600, display: String(import.meta.env.VITE_GEMS_PACK_1600_DISPLAY_EGP ?? '399').trim() },
+  { id: 'gems_120', gems: 120, display: String(import.meta.env.VITE_GEMS_PACK_120_DISPLAY_EGP ?? '').trim() },
+  { id: 'gems_300', gems: 300, display: String(import.meta.env.VITE_GEMS_PACK_300_DISPLAY_EGP ?? '').trim() },
+  { id: 'gems_700', gems: 700, display: String(import.meta.env.VITE_GEMS_PACK_700_DISPLAY_EGP ?? '').trim() },
+  { id: 'gems_1600', gems: 1600, display: String(import.meta.env.VITE_GEMS_PACK_1600_DISPLAY_EGP ?? '').trim() },
 ] as const;
 type GemPackId = typeof GEM_PACKS[number]['id'];
-const formatEgp = (value: string) => value ? `EGP ${value}` : 'EGP —';
+const formatEgp = (value: string) => value ? 'EGP ' + value : 'EGP —';
+async function getFunctionErrorCode(error: unknown) {
+  const context = (error as { context?: unknown } | null)?.context;
+  if (context instanceof Response) {
+    try { const body = await context.clone().json() as { error?: unknown }; if (body.error) return String(body.error); } catch { /* Fall back to the SDK message. */ }
+  }
+  return error instanceof Error ? error.message : '';
+}
 const BENEFIT_ITEMS: Array<[typeof Crown, string]> = [
   [Crown, 'companions'],
   [Sparkles, 'skins'],
@@ -62,6 +69,8 @@ const BENEFIT_ITEMS: Array<[typeof Crown, string]> = [
 export default function PremiumPage({ language }: Props) {
   const c = COPY[language];
   const { user } = useAuth();
+  const paymentsEnabled = import.meta.env.VITE_PAYMENTS_ENABLED === 'true' && isSupabaseConfigured;
+  const paymentUnavailable = language === 'ar' ? 'الدفع غير مفعّل حاليًا. يلزم إعداد Paymob ونشر وظائف الدفع قبل الشراء.' : 'Payments are not enabled yet. Paymob credentials and deployed checkout functions are required.';
   const [offset,setOffset]=useState(0);
   const [notice,setNotice]=useState('');
   const [paymentOpen,setPaymentOpen]=useState(false);
@@ -73,7 +82,8 @@ export default function PremiumPage({ language }: Props) {
   const [aiLimit,setAiLimit]=useState(100);
   const [premiumActive,setPremiumActive]=useState(false);
   const [catalogPets,setCatalogPets]=useState<CloudPetDefinition[]>([]);
-  useEffect(() => { let cancelled=false; loadPetCatalog().then(items=>{ if(!cancelled) setCatalogPets(items.filter(p=>p.premiumOnly)); }).catch(()=>undefined); return ()=>{cancelled=true}; }, [user?.id]);
+  const [catalogLoaded,setCatalogLoaded]=useState(false);
+  useEffect(() => { let cancelled=false; loadPetCatalog().then(items=>{ if(!cancelled) { setCatalogPets(items.filter(p=>p.premiumOnly)); setCatalogLoaded(true); } }).catch(()=>undefined); return ()=>{cancelled=true}; }, [user?.id]);
   useEffect(() => {
     if (!isSupabaseConfigured || !user) { setAiUsed(0); setAiLimit(100); setPremiumActive(false); return; }
     let cancelled = false;
@@ -90,7 +100,7 @@ export default function PremiumPage({ language }: Props) {
     })().catch(() => undefined);
     return () => { cancelled = true; };
   }, [user?.id]);
-  const premiumPets = catalogPets.length ? catalogPets : PREMIUM_PETS.map(p=>({...p,premiumOnly:true}));
+  const premiumPets: CloudPetDefinition[] = catalogLoaded ? catalogPets : PREMIUM_PETS.map(p=>({...p,premiumOnly:true}));
   const visible=useMemo(()=>Array.from({length:Math.min(6,premiumPets.length)},(_,i)=>premiumPets[(offset+i)%premiumPets.length]).filter(Boolean),[offset,premiumPets]);
   const buyPet=async(id:string, currency:'coins'|'gems')=>{
     const pet=catalogPets.find(x=>x.id===id) ?? PET_CATALOG.find(x=>x.id===id); if(!pet) return;
@@ -98,7 +108,7 @@ export default function PremiumPage({ language }: Props) {
     try { await profileStore.purchase('pet',id,currency); const name = c.pets[id] ?? pet.name; setNotice(c.unlocked); announceCommerce(language, 'pet', name); window.dispatchEvent(new CustomEvent('studyquest:economy-updated')); }
     catch(error){ setNotice(error instanceof Error && error.message==='online_account_required'?c.signIn:c.purchaseError); }
   };
-  const openCheckout=(selectedPlan:'monthly'|'yearly'='monthly')=>{ setPlan(selectedPlan); setNotice(''); setPaymentOpen(true); };
+  const openCheckout=(selectedPlan:'monthly'|'yearly'='monthly')=>{ if (!paymentsEnabled) { setNotice(paymentUnavailable); return; } setPlan(selectedPlan); setNotice(''); setPaymentOpen(true); };
 
   useEffect(() => {
     if (!isSupabaseConfigured || !user || typeof window === 'undefined') return undefined;
@@ -136,6 +146,7 @@ export default function PremiumPage({ language }: Props) {
   }, [user?.id, language, c.purchaseError]);
 
   const startGemCheckout=async(packId: GemPackId)=>{
+    if (!paymentsEnabled) { setNotice(paymentUnavailable); return; }
     if(!isSupabaseConfigured){ setNotice(language==='ar'?'الحساب السحابي غير متصل بعد.':'Cloud account is not connected yet.'); return; }
     if(!user){ setNotice(c.signIn); return; }
     if(!phone.trim()){ setNotice(language==='ar'?'أدخل رقم الهاتف ثم اضغط شحن الجواهر مرة أخرى.':'Enter your phone number, then press Buy Gems again.'); return; }
@@ -146,13 +157,14 @@ export default function PremiumPage({ language }: Props) {
       if(!data?.checkoutUrl) throw new Error(String(data?.error || 'checkout_url_missing'));
       window.location.assign(data.checkoutUrl);
     } catch(error) {
-      const raw = error instanceof Error ? error.message : '';
-      const friendly = /not_authenticated/i.test(raw) ? c.signIn : /payment_not_configured|gem_price_not_configured/i.test(raw) ? (language==='ar'?'شحن الجواهر لم يتم تفعيله على الحساب السحابي بعد.':'Gem top-up payments are not configured on the cloud account yet.') : c.purchaseError;
+      const raw = await getFunctionErrorCode(error);
+      const friendly = /not_authenticated/i.test(raw) ? c.signIn : /payment_not_configured|gem_price_not_configured|FunctionsFetchError|FunctionsRelayError/i.test(raw) ? (language==='ar'?'شحن الجواهر لم يتم تفعيله على الحساب السحابي بعد.':'Gem top-up payments are not configured on the cloud account yet.') : c.purchaseError;
       setNotice(friendly);
     } finally { setCheckoutLoading(false); }
   };
 
   const startCheckout=async()=>{
+    if (!paymentsEnabled) { setNotice(paymentUnavailable); return; }
     if(!isSupabaseConfigured){ setNotice(language==='ar'?'الحساب السحابي غير متصل بعد.':'Cloud account is not connected yet.'); return; }
     if(!user){ setPaymentOpen(false); setNotice(c.signIn); return; }
     if(!phone.trim()){ setNotice(language==='ar'?'أدخل رقم الهاتف لإتمام الدفع.':'Enter your phone number to continue.'); return; }
@@ -163,8 +175,8 @@ export default function PremiumPage({ language }: Props) {
       if(!data?.checkoutUrl) throw new Error(String(data?.error || 'checkout_url_missing'));
       window.location.assign(data.checkoutUrl);
     } catch(error) {
-      const raw = error instanceof Error ? error.message : '';
-      const friendly = /not_authenticated/i.test(raw) ? c.signIn : /payment_not_configured|premium_price_not_configured/i.test(raw) ? (language==='ar'?'الدفع لم يتم تفعيله على الحساب السحابي بعد.':'Payments are not configured on the cloud account yet.') : c.purchaseError;
+      const raw = await getFunctionErrorCode(error);
+      const friendly = /not_authenticated/i.test(raw) ? c.signIn : /payment_not_configured|premium_price_not_configured|FunctionsFetchError|FunctionsRelayError/i.test(raw) ? (language==='ar'?'الدفع لم يتم تفعيله على الحساب السحابي بعد.':'Payments are not configured on the cloud account yet.') : c.purchaseError;
       setNotice(friendly);
     } finally { setCheckoutLoading(false); }
   };
@@ -176,18 +188,18 @@ export default function PremiumPage({ language }: Props) {
         <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full premium-gold-chip text-xs font-black"><Crown className="w-4 h-4"/> Premium World</div>
         <h1 className="mt-5 text-3xl md:text-5xl font-black tracking-tight text-[var(--sq-heading)] leading-tight">{c.heroTitle}</h1>
         <p className="mt-4 max-w-2xl text-sm md:text-base text-[var(--sq-muted-strong)] leading-7">{c.heroBody}</p>
-        <button type="button" onClick={openCheckout} className="mt-6 inline-flex items-center gap-2 px-6 py-3 rounded-2xl premium-cta font-black"><Crown className="w-5 h-5"/>{c.subscribe}<Zap className="w-4 h-4"/></button>
+        <button type="button" onClick={() => openCheckout()} disabled={!paymentsEnabled} className="mt-6 inline-flex items-center gap-2 px-6 py-3 rounded-2xl premium-cta font-black"><Crown className="w-5 h-5"/>{c.subscribe}<Zap className="w-4 h-4"/></button>
         <div className="mt-8 grid grid-cols-2 md:grid-cols-4 gap-2 max-w-3xl">{[[Crown,c.companions],[Sparkles,c.skins],[Star,c.rewards],[Bot,'AI Planner']].map(([I,t],i)=>{const Icon=I as typeof Crown; return <div key={i} className="premium-mini-pill"><Icon className="w-4 h-4"/><span>{t as string}</span></div>})}</div>
       </div>
     </section>
 
     <section className="flex flex-col gap-5 w-full">
       <div className="rounded-3xl sq-shell-card p-5 md:p-6"><div className="flex items-center justify-between gap-4 mb-5"><div><p className="text-xs uppercase tracking-[.22em] text-neon-cyan font-bold">Premium</p><h2 className="text-xl md:text-2xl font-black text-[var(--sq-heading)] mt-1">{c.benefits}</h2></div><Crown className="w-7 h-7 text-neon-amber"/></div><div className="grid sm:grid-cols-2 gap-3">{BENEFIT_ITEMS.map(([Icon,key],i)=>{const title=c[key as keyof PremiumCopy] as string;return <div key={i} className="premium-benefit"><Icon className="w-5 h-5 text-neon-cyan shrink-0"/><div><h3 className="font-bold text-sm text-[var(--sq-heading)]">{title}</h3><p className="text-xs text-[var(--sq-muted)] mt-1 leading-5">{c.heroBody}</p></div><Check className="w-4 h-4 text-neon-emerald shrink-0"/></div>})}</div></div>
-      <div className="premium-plan rounded-3xl p-5 md:p-6"><div className="flex items-center gap-2 text-neon-amber font-bold"><Crown className="w-5 h-5"/>{c.plan}</div><div className="grid grid-cols-2 gap-3 mt-4"><div className="premium-price-card"><div className="text-xs font-bold">{c.monthly}</div><div className="mt-2 text-2xl font-black">{formatEgp(displayMonthlyPrice)}</div><span>{c.month}</span><button onClick={()=>openCheckout('monthly')}>{c.upgrade}</button></div><div className="premium-price-card featured"><div className="text-xs font-bold">{c.yearly}</div><div className="mt-2 text-2xl font-black">{formatEgp(displayYearlyPrice)}</div><span>{c.year}</span><button onClick={()=>openCheckout('yearly')}>{c.upgrade}</button><b>{c.bestValue}</b></div></div><div className="mt-4 space-y-2 text-xs text-[var(--sq-muted-strong)]"><div className="flex gap-2 font-black text-neon-cyan"><Gem className="w-4 h-4 shrink-0"/>{c.premiumGift}</div><div className="flex gap-2 font-bold text-[var(--sq-heading)]"><Sparkles className="w-4 h-4 shrink-0 text-neon-amber"/>{c.welcomeGift}</div>{[c.companions,c.skins,c.aiLimit,c.adFree].map(x=><div key={x} className="flex gap-2"><Check className="w-4 h-4 text-neon-emerald shrink-0"/>{x}</div>)}</div><div className="mt-5 flex items-center gap-2 text-[11px] text-[var(--sq-muted)]"><ShieldCheck className="w-4 h-4"/>{c.secure} · {c.cancel} · {c.support}</div></div>
+      <div className="premium-plan rounded-3xl p-5 md:p-6"><div className="flex items-center gap-2 text-neon-amber font-bold"><Crown className="w-5 h-5"/>{c.plan}</div><div className="grid grid-cols-2 gap-3 mt-4"><div className="premium-price-card"><div className="text-xs font-bold">{c.monthly}</div><div className="mt-2 text-2xl font-black">{formatEgp(displayMonthlyPrice)}</div><span>{c.month}</span><button disabled={!paymentsEnabled} onClick={()=>openCheckout('monthly')}>{c.upgrade}</button></div><div className="premium-price-card featured"><div className="text-xs font-bold">{c.yearly}</div><div className="mt-2 text-2xl font-black">{formatEgp(displayYearlyPrice)}</div><span>{c.year}</span><button disabled={!paymentsEnabled} onClick={()=>openCheckout('yearly')}>{c.upgrade}</button><b>{c.bestValue}</b></div></div><div className="mt-4 space-y-2 text-xs text-[var(--sq-muted-strong)]"><div className="flex gap-2 font-black text-neon-cyan"><Gem className="w-4 h-4 shrink-0"/>{c.premiumGift}</div><div className="flex gap-2 font-bold text-[var(--sq-heading)]"><Sparkles className="w-4 h-4 shrink-0 text-neon-amber"/>{c.welcomeGift}</div>{[c.companions,c.skins,c.aiLimit,c.adFree].map(x=><div key={x} className="flex gap-2"><Check className="w-4 h-4 text-neon-emerald shrink-0"/>{x}</div>)}</div><div className="mt-5 flex items-center gap-2 text-[11px] text-[var(--sq-muted)]"><ShieldCheck className="w-4 h-4"/>{c.secure} · {c.cancel} · {c.support}</div></div>
 
     <section className="rounded-3xl sq-shell-card p-5 md:p-6">
       <div className="flex items-center justify-between gap-4 mb-2"><div><div className="flex items-center gap-2 text-neon-cyan font-bold"><WalletCards className="w-5 h-5"/><span className="text-xs uppercase tracking-[.2em]">{c.gemTopup}</span></div><h2 className="text-xl md:text-2xl font-black text-[var(--sq-heading)] mt-1">{c.buyGems}</h2><p className="text-xs text-[var(--sq-muted)] mt-1">{c.gemTopupBody}</p></div><Gem className="w-8 h-8 text-neon-cyan"/></div>
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mt-5">{GEM_PACKS.map(pack=><article key={pack.id} className="premium-price-card"><div className="text-xs font-bold">{c.gemPack}</div><div className="mt-2 text-2xl font-black flex items-center gap-2">{pack.gems.toLocaleString()} <Gem className="w-5 h-5 text-neon-cyan"/></div><div className="mt-1 text-xs text-[var(--sq-muted)]">{c.priceLabel}: {pack.display} EGP</div><button type="button" onClick={()=>startGemCheckout(pack.id)} disabled={checkoutLoading} className="mt-3 w-full rounded-xl premium-secondary py-2 text-xs font-black disabled:opacity-60">{c.buyGems}</button></article>)}</div>
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mt-5">{GEM_PACKS.map(pack=><article key={pack.id} className="premium-price-card"><div className="text-xs font-bold">{c.gemPack}</div><div className="mt-2 text-2xl font-black flex items-center gap-2">{pack.gems.toLocaleString()} <Gem className="w-5 h-5 text-neon-cyan"/></div><div className="mt-1 text-xs text-[var(--sq-muted)]">{c.priceLabel}: {formatEgp(pack.display)}</div><button type="button" onClick={()=>startGemCheckout(pack.id)} disabled={checkoutLoading || !paymentsEnabled} className="mt-3 w-full rounded-xl premium-secondary py-2 text-xs font-black disabled:opacity-60">{c.buyGems}</button></article>)}</div>
       <p className="mt-4 text-[11px] text-[var(--sq-muted)]">{c.parentPurchaseNote}</p>
     </section>
     </section>
@@ -196,7 +208,7 @@ export default function PremiumPage({ language }: Props) {
 
     <section className="rounded-3xl sq-shell-card p-5 md:p-6 overflow-hidden"><div className="flex items-center justify-between gap-3 mb-5"><div><div className="flex items-center gap-2 text-amber-200"><Crown className="w-5 h-5"/><span className="text-xs uppercase tracking-[.2em] font-bold">{c.exclusive}</span></div><h2 className="text-xl md:text-2xl font-black text-[var(--sq-heading)] mt-1">{c.exclusive}</h2></div><div className="flex gap-2"><button type="button" aria-label="Previous" onClick={()=>setOffset(x=>(x-1+premiumPets.length)%premiumPets.length)} className="premium-arrow"><ChevronLeft className="w-4 h-4"/></button><button type="button" aria-label="Next" onClick={()=>setOffset(x=>(x+1)%premiumPets.length)} className="premium-arrow"><ChevronRight className="w-4 h-4"/></button></div></div><div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-4">{visible.map((pet)=>{const visual=getPetVisual(pet.id);return <article key={pet.id} className={`premium-pet-card ${'premium-3d-pet'}`} style={{background:`radial-gradient(circle at 50% 20%, ${visual.accent}18, transparent 46%), linear-gradient(145deg, rgba(20,35,60,.9), rgba(4,12,24,.96))`}}><div className="premium-pet-art"><img src={pet.imageUrl || visual.asset} alt={c.pets[pet.id]??pet.name} style={{filter:visual.filter}}/></div><div className="premium-pet-meta"><span className="premium-rarity" style={{color:visual.accent}}>{c.rarity[pet.rarity]}</span><h3>{c.pets[pet.id]??pet.name}</h3><span className="premium-exclusive-badge"><Crown className="w-3 h-3"/>{c.premiumExclusive}</span><div className="grid grid-cols-2 gap-2">{pet.coinPrice>0 && <button type="button" onClick={()=>buyPet(pet.id,'coins')} disabled={!premiumActive} title={!premiumActive ? c.premiumRequired : undefined} className="premium-buy disabled:opacity-60 text-[11px]"><Sparkles className="w-3.5 h-3.5"/>{pet.coinPrice.toLocaleString()} <span>{c.currencyCoins}</span></button>}{pet.gemPrice>0 && <button type="button" onClick={()=>buyPet(pet.id,'gems')} disabled={!premiumActive} title={!premiumActive ? c.premiumRequired : undefined} className="premium-buy disabled:opacity-60 text-[11px]"><Gem className="w-3.5 h-3.5"/>{pet.gemPrice.toLocaleString()} <span>{c.currencyGems}</span></button>}</div></div></article>})}</div></section>
 
-    <section className="rounded-3xl sq-shell-card p-5 md:p-6"><div className="flex items-center gap-3 mb-4"><CreditCard className="w-5 h-5 text-neon-cyan"/><h2 className="text-lg font-black text-[var(--sq-heading)]">{c.paymentMethods}</h2></div><div className="grid grid-cols-2 md:grid-cols-4 gap-3">{PAYMENT_METHODS.map(([id,label,Icon])=>{const active=method===id;return <button type="button" key={id} onClick={()=>setMethod(id)} className={`payment-method-card ${active?'active':''}`}><Icon className="w-5 h-5"/><span>{label}</span></button>})}</div><div className="mt-4 flex flex-wrap items-center gap-3 text-xs text-[var(--sq-muted)]"><span className="flex items-center gap-1"><ShieldCheck className="w-4 h-4"/>{c.secureCheckout}</span><span>{c.parentApproval}</span></div></section>
+    <section className="rounded-3xl sq-shell-card p-5 md:p-6"><div className="flex items-center gap-3 mb-4"><CreditCard className="w-5 h-5 text-neon-cyan"/><h2 className="text-lg font-black text-[var(--sq-heading)]">{c.paymentMethods}</h2></div><p role="status" className="mb-3 rounded-xl border border-amber-400/20 bg-amber-400/5 px-4 py-3 text-xs leading-6 text-[var(--sq-muted-strong)]">{paymentsEnabled ? (language === 'ar' ? 'بوابة الدفع متاحة. أكمل الشراء عبر صفحة Paymob الآمنة.' : 'Checkout is available through Paymob’s secure page.') : paymentUnavailable}</p><div className="grid grid-cols-2 md:grid-cols-4 gap-3">{PAYMENT_METHODS.map(([id,label,Icon])=>{const active=method===id;return <button type="button" key={id} onClick={()=>setMethod(id)} className={`payment-method-card ${active?'active':''}`}><Icon className="w-5 h-5"/><span>{label}</span></button>})}</div><div className="mt-4 flex flex-wrap items-center gap-3 text-xs text-[var(--sq-muted)]"><span className="flex items-center gap-1"><ShieldCheck className="w-4 h-4"/>{c.secureCheckout}</span><span>{c.parentApproval}</span></div></section>
 
     <div className="flex flex-wrap justify-center gap-4 text-xs text-[var(--sq-muted)]"><span className="flex items-center gap-1"><Globe2 className="w-4 h-4"/>{c.languages}: English · العربية · Deutsch · 日本語 · Français</span></div>
     {notice && <div className="fixed bottom-5 left-1/2 -translate-x-1/2 z-[90] rounded-2xl px-5 py-3 glass border border-cyan-300/20 text-sm text-[var(--sq-heading)] shadow-2xl">{notice}</div>}

@@ -50,6 +50,8 @@ async function main(req: Request) {
   if (userError || !user) return new Response(JSON.stringify({ error: 'unauthorized' }), { status: 401, headers: { ...corsHeadersFor(req.headers.get('Origin')), 'Content-Type': 'application/json' } });
 
   const body = await req.json().catch(() => ({}));
+  // Remove control characters that can break prompt formatting.
+  // eslint-disable-next-line no-control-regex
   const prompt = String(body.prompt ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 5000);
   const planDate = String(body.plan_date ?? '').trim();
   const timezone = String(body.timezone ?? 'UTC').trim().slice(0, 80);
@@ -87,12 +89,12 @@ async function main(req: Request) {
   }
 
   const plannerLanguage = ({ar:'Arabic',en:'English',ja:'Japanese',fr:'French',de:'German'} as Record<string,string>)[language] || 'English';
-  const plannerSystem = `You are StudyQuest's Tomorrow Planner. Turn ONLY the student's free-form list into a realistic schedule for ${planDate} in timezone ${timezone}. Respond with all human-readable title, task title, notes, and subject names in ${plannerLanguage}. This endpoint is a planner, not a tutor or chat assistant. Never invent assignments the student did not mention. You may estimate missing durations between 15 and 90 minutes. If exact times are missing, choose sensible study times and avoid overlap. Return ONLY JSON matching the requested schema. Every task must contain title, notes, duration_minutes, start_at, and subject_name when inferable. start_at must be a full ISO-8601 timestamp for the requested date and timezone. Do not add rewards, XP, Coins, Gems, ranks, or academic scores.`;
+  const plannerSystem = `You are StudyQuest's Tomorrow Planner. Turn ONLY the student's NEW tasks into schedule cards to append to the existing plan, if one exists. Never replace existing tasks. Build the schedule for ${planDate} in timezone ${timezone}. Respond with all human-readable title, task title, notes, and subject names in ${plannerLanguage}. This endpoint is a planner, not a tutor or chat assistant. Never invent assignments the student did not mention. You may estimate missing durations between 15 and 90 minutes. If exact times are missing, choose sensible study times and avoid overlap. Return ONLY JSON matching the requested schema. Every task must contain title, notes, duration_minutes, start_at, and subject_name when inferable. start_at must be a full ISO-8601 timestamp for the requested date and timezone. Do not add rewards, XP, Coins, Gems, ranks, or academic scores.`;
   const aiResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(aiModel)}:generateContent`, {
     method: 'POST',
     headers: { 'x-goog-api-key': aiKey, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      contents: [{ role: 'user', parts: [{ text: `${plannerSystem}\n\nStudent's plan:\n${prompt}` }] }],
+      contents: [{ role: 'user', parts: [{ text: `${plannerSystem}\n\nStudent's new tasks to add:\n${prompt}` }] }],
       generationConfig: {
         temperature: 0.15,
         maxOutputTokens: 1800,
@@ -132,13 +134,12 @@ async function main(req: Request) {
   const text = ai?.candidates?.[0]?.content?.parts?.map((part: { text?: string }) => part?.text ?? '').join('') ?? '{}';
   let parsed: unknown;
   try { parsed = JSON.parse(text); } catch { parsed = { title: 'Tomorrow Study Plan', tasks: [] }; }
-  const plan = normalizePlan(parsed);
+const plan = normalizePlan(parsed);
   let totalMinutes = 0;
   const boundedTasks = [];
   for (const task of plan.tasks) {
     if (totalMinutes >= 720) break;
-    const remaining = 720 - totalMinutes;
-    const duration = Math.min(task.duration_minutes, remaining);
+    const duration = Math.min(task.duration_minutes, 720 - totalMinutes);
     if (duration < 5) break;
     boundedTasks.push({ ...task, duration_minutes: duration });
     totalMinutes += duration;
@@ -159,8 +160,12 @@ async function main(req: Request) {
   const { data: savedPlan, error: planError } = await supabase.from('study_plans').select('id').eq('user_id', user.id).eq('plan_date', planDate).single();
   if (planError || !savedPlan) throw planError ?? new Error('plan_not_saved');
 
-  await supabase.from('study_plan_tasks').delete().eq('plan_id', savedPlan.id).eq('user_id', user.id);
-
+  const { data: existingTasks, error: existingTasksError } = await supabase.from('study_plan_tasks').select('position').eq('plan_id', savedPlan.id).eq('user_id', user.id);
+  if (existingTasksError) throw existingTasksError;
+  const nextPosition = (existingTasks ?? []).reduce((max, task) => Math.max(max, Number(task.position)), -1) + 1;
+  if (nextPosition + plan.tasks.length > 200) {
+    return new Response(JSON.stringify({ error: 'plan_task_limit_reached' }), { status: 409, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+  }
   const { data: subjects, error: subjectsError } = await supabase
     .from('subjects')
     .select('id,name')
@@ -168,14 +173,14 @@ async function main(req: Request) {
   if (subjectsError) throw subjectsError;
   const subjectByName = new Map((subjects ?? []).map((s: { id: string; name: string }) => [s.name.trim().toLowerCase(), s.id]));
 
-  const taskRows = plan.tasks.map((task, position) => {
+  const taskRows = plan.tasks.map((task, index) => {
     const subjectId = task.subject_name ? subjectByName.get(task.subject_name.trim().toLowerCase()) ?? null : null;
     const parsedStart = task.start_at ? new Date(task.start_at) : null;
     return {
-      plan_id: savedPlan.id,
+      plan_id: savedPlanId,
       user_id: user.id,
       subject_id: subjectId,
-      position,
+      position: nextPosition + index,
       title: task.title,
       notes: task.notes ?? null,
       start_at: parsedStart && !Number.isNaN(parsedStart.getTime()) ? parsedStart.toISOString() : null,
@@ -183,12 +188,9 @@ async function main(req: Request) {
       status: 'pending',
     };
   });
-  if (taskRows.length) {
-    const { error: taskError } = await supabase.from('study_plan_tasks').insert(taskRows);
-    if (taskError) throw taskError;
-  }
-
-  return new Response(JSON.stringify({ ...plan, plan_id: savedPlan.id }), { status: 200, headers: { ...corsHeadersFor(req.headers.get('Origin')), 'Content-Type': 'application/json' } });
+  const { error: taskError } = await supabase.from('study_plan_tasks').insert(taskRows);
+  if (taskError) throw taskError;
+  return new Response(JSON.stringify({ ...plan, plan_id: savedPlanId }), { status: 200, headers: { ...corsHeadersFor(req.headers.get('Origin')), 'Content-Type': 'application/json' } });
 }
 
 serve((req) => main(req).catch((error) => {

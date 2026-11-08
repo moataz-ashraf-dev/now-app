@@ -1,31 +1,39 @@
-import { useState, useEffect, useCallback } from 'react';
+import { lazy, Suspense, useState, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useAuth } from '@/auth/useAuth';
 import { store } from '@/lib/store';
 import { focusTimer } from '@/lib/focusTimer';
-import type { Subject, AppState, AmbientSound } from '@/lib/supabase';
+import type { Subject, AppState, AmbientSound, StreakDay } from '@/lib/supabase';
 import Navbar from '@/components/Navbar';
 import Footer from '@/components/Footer';
 import MobileNav from '@/components/MobileNav';
 import PomodoroTimer from '@/components/PomodoroTimer';
 import SubjectGrid from '@/components/SubjectGrid';
-import AmbientSoundWidget from '@/components/AmbientSound';
+import AmbientSoundWidget, { type AmbientValue } from '@/components/AmbientSound';
 import StudyAudio from '@/components/StudyAudio';
 import StreakBoard from '@/components/StreakBoard';
 import PetCard from '@/components/PetCard';
-import ProfilePage from '@/components/ProfilePage';
-import Leaderboard from '@/components/Leaderboard';
-import TomorrowPlanner from '@/components/TomorrowPlanner';
-import StudyAssistant from '@/components/StudyAssistant';
-import AdminDashboard from '@/components/AdminDashboard';
+
+
+
+
+
 import AccountMenu from '@/components/AccountMenu';
-import PremiumPage from '@/components/PremiumPage';
-import { completePlanTask, deletePlanTask, getDailyAIStatus, loadPlan, localCalendarDate, setTaskStatus, type DailyAIStatus, type StudyPlan } from '@/lib/planner';
+
+import { completePlanTask, deletePlanTask, getDailyAIStatus, loadPlan, localCalendarDate, markPlanTaskCompletedLocally, setTaskStatus, type DailyAIStatus, type StudyPlan } from '@/lib/planner';
 import { LANGUAGES, type LanguageCode, type ThemeMode, type TranslationKey, translateSubjectName, TRANSLATIONS } from '@/lib/i18n';
+import { taskDialogI18n } from '@/lib/taskDialogI18n';
 import { PET_CATALOG, profileStore } from '@/lib/profileStore';
 import { getPetVisual } from '@/lib/petAssets';
-import { announceStudyTimer, notifyPlanOverdue, notifyStudyMilestone, requestStudyNotifications } from '@/lib/notifications';
+import { announceStudyTimer, notifyPlanOverdue, requestStudyNotifications } from '@/lib/notifications';
 import { cancelStudyCompletionNotification, requestMobileNotificationPermission, scheduleStudyTimerNotifications } from '@/lib/mobile';
+
+const ProfilePage = lazy(() => import('@/components/ProfilePage'));
+const Leaderboard = lazy(() => import('@/components/Leaderboard'));
+const TomorrowPlanner = lazy(() => import('@/components/TomorrowPlanner'));
+const StudyAssistant = lazy(() => import('@/components/StudyAssistant'));
+const AdminDashboard = lazy(() => import('@/components/AdminDashboard'));
+const PremiumPage = lazy(() => import('@/components/PremiumPage'));
 
 const MOTIVATIONAL_QUOTES = [
   'Keep grinding, hero! Your pet is proud of you!',
@@ -59,7 +67,7 @@ const getStoredLanguage = (): LanguageCode => {
 export default function App() {
   const { user, loading: authLoading } = useAuth();
   const [subjects, setSubjects] = useState<Subject[]>([]);
-  const [streakDays, setStreakDays] = useState<LocalData['streakDays']>([]);
+  const [streakDays, setStreakDays] = useState<StreakDay[]>([]);
   const [appState, setAppState] = useState<AppState | null>(null);
   const [activeTab, setActiveTab] = useState('dashboard');
   const [isRunning, setIsRunning] = useState(false);
@@ -72,6 +80,7 @@ export default function App() {
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [theme, setTheme] = useState<ThemeMode>(getStoredTheme);
   const [language, setLanguage] = useState<LanguageCode>(getStoredLanguage);
+  const dialogText = taskDialogI18n[language];
   const [tomorrowPlan, setTomorrowPlan] = useState<StudyPlan | null>(null);
   const [planDateLabel, setPlanDateLabel] = useState<'today' | 'tomorrow'>('tomorrow');
   const [equippedPetId, setEquippedPetId] = useState(() => profileStore.load().equippedPetId || '');
@@ -86,6 +95,53 @@ export default function App() {
   const [switchTaskId, setSwitchTaskId] = useState<string | null>(null);
   const t = useCallback((key: TranslationKey) => TRANSLATIONS[language][key], [language]);
   const isAdmin = user?.app_metadata?.role === 'admin';
+  const markTodayStreak = useCallback(() => {
+    const day = store.load().streakDays.find((item) => item.day_of_week === new Date().getDay());
+    if (!day) return;
+    store.markStreakComplete(day.id);
+    const updatedAt = new Date().toISOString();
+    setStreakDays((current) => current.map((item) => item.id === day.id
+      ? { ...item, completed: true, updated_at: updatedAt }
+      : item));
+  }, []);
+
+  const finishPendingServerSession = useCallback(async () => {
+    if (!navigator.onLine) return;
+    const pending = focusTimer.load();
+    if (pending.status !== 'paused' || pending.remainingSeconds > 0 || !pending.serverBacked || !pending.operationId) return;
+    try {
+      const result = await focusTimer.complete();
+      if (!result.reward) return;
+      store.setLocalAppState({ coins: result.reward.coins, gems: result.reward.gems });
+      setAppState((current) => current ? { ...current, coins: result.reward!.coins, gems: result.reward!.gems } : current);
+      if (pending.taskId) {
+        markPlanTaskCompletedLocally(pending.taskId);
+        const daily = await completePlanTask(pending.taskId, result.reward.session_id);
+        if (daily) {
+          store.setLocalAppState({ coins: daily.coins });
+          setAppState((current) => current ? { ...current, coins: daily.coins } : current);
+
+          if (daily.golden_star_awarded || daily.correct) {
+            setRewardToast(daily.golden_star_awarded
+              ? (language === 'ar' ? '⭐ نجمة ذهبية! أكملت 26 يومًا صحيحًا' : '⭐ Golden Star! 26 correct days completed')
+              : (language === 'ar' ? '🎉 يوم صحيح! +30 كوين' : '🎉 Perfect day! +30 Coins'));
+            window.setTimeout(() => setRewardToast(null), 5200);
+          }
+        }
+        const [todayPlan, tomorrowPlan] = await Promise.all([loadPlan(localCalendarDate(0)), loadPlan(localCalendarDate(1))]);
+        const updatedPlan = [todayPlan, tomorrowPlan].find((plan) => plan?.tasks?.some((task) => task.id === pending.taskId));
+        if (updatedPlan) {
+          setTomorrowPlan(updatedPlan);
+          setPlanDateLabel(updatedPlan.plan_date === localCalendarDate(0) ? 'today' : 'tomorrow');
+          void getDailyAIStatus(updatedPlan.plan_date).then((planStatus) => { if (planStatus) setDailyAIStatus(planStatus); }).catch(() => undefined);
+        }
+      }
+      setRewardToast(language === 'ar' ? 'تمت المزامنة واستلام المكافأة من السيرفر' : 'Synced successfully; server rewards received');
+      window.setTimeout(() => setRewardToast(null), 4500);
+    } catch (error) {
+      console.error('[StudyQuest] pending server session sync failed:', error);
+    }
+  }, [language]);
 
   // Persist theme + language locally and update the document without any network dependency.
   useEffect(() => {
@@ -112,8 +168,25 @@ export default function App() {
   // Load from localStorage instantly, then try cloud sync
   useEffect(() => {
     const refreshEconomy = () => {
+      if (store.isOnline()) {
+        store.syncFromCloud()
+          .then((synced) => {
+            setAppState((prev) =>
+              prev
+                ? { ...prev, coins: synced.appState.coins, gems: synced.appState.gems }
+                : synced.appState,
+            );
+          })
+          .catch(() => {});
+        return;
+      }
+
       const local = store.load();
-      setAppState((prev) => prev ? { ...prev, coins: local.appState.coins, gems: local.appState.gems } : local.appState);
+      setAppState((prev) =>
+        prev
+          ? { ...prev, coins: local.appState.coins, gems: local.appState.gems }
+          : local.appState,
+      );
     };
     window.addEventListener('studyquest:economy-updated', refreshEconomy);
     return () => window.removeEventListener('studyquest:economy-updated', refreshEconomy);
@@ -177,6 +250,7 @@ export default function App() {
 
     const handleOnline = () => {
       setIsOnline(true);
+      void finishPendingServerSession();
       setIsSyncing(true);
       store.syncFromCloud()
         .then((synced) => {
@@ -194,24 +268,25 @@ export default function App() {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
     };
-  }, [authLoading, user?.id]);
+  }, [authLoading, user?.id, finishPendingServerSession]);
 
   useEffect(() => {
     if (!user || !isOnline) return;
+    void finishPendingServerSession();
     let cancelled = false;
     Promise.all([loadPlan(localCalendarDate(0)), loadPlan(localCalendarDate(1))]).then(([today, tomorrow]) => {
       if (cancelled) return;
-      const todayHasWork = Boolean(today?.tasks?.some((task) => task.status === 'pending' || task.status === 'in_progress'));
-      setTomorrowPlan(todayHasWork ? today : tomorrow);
-      setPlanDateLabel(todayHasWork ? 'today' : 'tomorrow');
+      const todayHasTasks = Boolean(today?.tasks?.length);
+      setTomorrowPlan(todayHasTasks ? today : tomorrow);
+      setPlanDateLabel(todayHasTasks ? 'today' : 'tomorrow');
     }).catch(() => undefined);
     return () => { cancelled = true; };
-  }, [user?.id, isOnline]);
+  }, [user?.id, isOnline, finishPendingServerSession]);
 
   useEffect(() => {
     if (!user || !isOnline) return;
-    getDailyAIStatus(localCalendarDate(0)).then(setDailyAIStatus).catch(() => undefined);
-  }, [user?.id, isOnline, tomorrowPlan]);
+    getDailyAIStatus(tomorrowPlan?.plan_date ?? localCalendarDate(0)).then(setDailyAIStatus).catch(() => undefined);
+  }, [user?.id, isOnline, tomorrowPlan?.plan_date]);
 
   useEffect(() => {
     if (!tomorrowPlan?.tasks?.length || planDateLabel !== 'today') return;
@@ -379,7 +454,14 @@ export default function App() {
 
   // Complete session.
   const handleComplete = useCallback(async () => {
-    if (!activeSubject) return;
+    const timerBeforeComplete = focusTimer.load();
+    const completedSubject = activeSubject ?? subjects.find((subject) => subject.id === timerBeforeComplete.subjectId) ?? null;
+    const completedTaskId = activePlanTaskId ?? timerBeforeComplete.taskId;
+    if (!completedSubject) {
+      setRewardToast(language === 'ar' ? 'تعذر العثور على المادة المرتبطة بالمؤقت' : 'Could not find the subject linked to this timer');
+      window.setTimeout(() => setRewardToast(null), 5000);
+      return;
+    }
 
     await cancelStudyCompletionNotification();
 
@@ -441,19 +523,25 @@ export default function App() {
           );
         }
 
-        if (activePlanTaskId && result.reward.session_id) {
+        if (completedTaskId && result.reward.session_id) {
+          markPlanTaskCompletedLocally(completedTaskId);
+          setTomorrowPlan((current) => current ? {
+            ...current,
+            tasks: (current.tasks ?? []).map((task) => task.id === completedTaskId
+              ? { ...task, status: 'completed', completed_at: task.completed_at ?? new Date().toISOString(), updated_at: new Date().toISOString() }
+              : task),
+          } : current);
           try {
             const daily = await completePlanTask(
-              activePlanTaskId,
+              completedTaskId,
               result.reward.session_id,
             );
 
             if (daily) {
-              setDailyAIStatus({
-                ...daily,
-                plan_date: localCalendarDate(0),
-                has_plan: true,
-              } as DailyAIStatus);
+              // Daily completion rewards are credited separately from session rewards.
+              store.setLocalAppState({ coins: daily.coins });
+              setAppState((current) => current ? { ...current, coins: daily.coins } : current);
+    
 
               if (daily.golden_star_awarded) {
                 setRewardToast(
@@ -488,19 +576,43 @@ export default function App() {
             window.setTimeout(() => setRewardToast(null), 7000);
           }
 
-          loadPlan(localCalendarDate(0))
-            .then((plan) => {
-              if (plan) {
-                setTomorrowPlan(plan);
-                setPlanDateLabel('today');
+          Promise.all([
+            loadPlan(localCalendarDate(0)),
+            loadPlan(localCalendarDate(1)),
+          ])
+            .then(([todayPlan, tomorrowPlan]) => {
+              const updatedPlan = [todayPlan, tomorrowPlan].find(
+                (plan) => plan?.tasks?.some((task) => task.id === completedTaskId),
+              );
+
+              if (updatedPlan) {
+                setTomorrowPlan(updatedPlan);
+                setPlanDateLabel(
+                  updatedPlan.plan_date === localCalendarDate(0) ? 'today' : 'tomorrow',
+                );
               }
             })
             .catch(() => undefined);
         }
       } else {
+        if (completedTaskId) {
+          markPlanTaskCompletedLocally(completedTaskId);
+          setTomorrowPlan((current) => current ? {
+            ...current,
+            tasks: (current.tasks ?? []).map((task) => task.id === completedTaskId
+              ? { ...task, status: 'completed', completed_at: new Date().toISOString(), updated_at: new Date().toISOString() }
+              : task),
+          } : current);
+        }
+        if (timerBeforeComplete.serverBacked && timerBeforeComplete.operationId) {
+          setRewardToast(language === 'ar'
+            ? 'المهمة اكتملت واتحفظت محليًا؛ المكافأة هتتأكد وتتزامن لما الإنترنت يرجع'
+            : 'Task completed locally; the server reward will sync when internet returns');
+          window.setTimeout(() => setRewardToast(null), 6000);
+        } else {
         store.addSession({
-          subject_id: activeSubject.id,
-          duration_minutes: activeSubject.duration_minutes,
+          subject_id: completedSubject.id,
+          duration_minutes: completedSubject.duration_minutes,
           completed: true,
         });
 
@@ -527,14 +639,14 @@ export default function App() {
           const earnedTodayBeforeCurrent = Math.max(
             0,
             earnedTodayIncludingCurrent -
-              activeSubject.duration_minutes,
+              completedSubject.duration_minutes,
           );
 
           const coinsEarned = Math.max(
             0,
             Math.min(
-              activeSubject.duration_minutes,
-              50 - earnedTodayBeforeCurrent,
+              completedSubject.duration_minutes,
+              60 - earnedTodayBeforeCurrent,
             ),
           );
 
@@ -542,7 +654,7 @@ export default function App() {
             coins: appState.coins + coinsEarned,
             gems:
               appState.gems +
-              (activeSubject.duration_minutes >= 45 ? 1 : 0),
+              (completedSubject.duration_minutes >= 45 ? 1 : 0),
           });
 
           setRewardToast(
@@ -577,16 +689,29 @@ export default function App() {
             ),
           );
         }
+        }
       }
-    } catch {
+    } catch (error) {
+      if (completedTaskId && timerBeforeComplete.remainingSeconds <= 0) {
+        markPlanTaskCompletedLocally(completedTaskId);
+        setTomorrowPlan((current) => current ? {
+          ...current,
+          tasks: (current.tasks ?? []).map((task) => task.id === completedTaskId
+            ? { ...task, status: 'completed', completed_at: task.completed_at ?? new Date().toISOString(), updated_at: new Date().toISOString() }
+            : task),
+        } : current);
+      }
+      console.error('[StudyQuest] focus session completion failed:', error);
+      if (timerBeforeComplete.serverBacked && timerBeforeComplete.operationId && navigator.onLine) {
+        window.setTimeout(() => { void finishPendingServerSession(); }, 2500);
+      }
       setRewardToast(
         language === 'ar'
-          ? 'لم تكتمل الجلسة بعد أو تعذر تأكيدها'
-          : 'The session is not complete yet or could not be verified',
+          ? 'تم حفظ اكتمال المهمة محليًا، لكن المكافأة تحتاج اتصالًا وتأكيدًا من السيرفر'
+          : 'Task completion was saved locally; rewards still need server verification',
       );
-
-      window.setTimeout(() => setRewardToast(null), 3600);
-      return;
+      window.setTimeout(() => setRewardToast(null), 6000);
+      if (timerBeforeComplete.remainingSeconds > 0) return;
     }
 
     setIsRunning(false);
@@ -598,6 +723,8 @@ export default function App() {
     updateAppState({ active_subject_id: null });
   }, [
     activeSubject,
+    subjects,
+    finishPendingServerSession,
     appState,
     streakDays,
     activePlanTaskId,
@@ -630,7 +757,7 @@ export default function App() {
     return () => window.clearInterval(interval);
   }, [isRunning, handleComplete]);
 
-  const startPlannedTask = useCallback(async (task: StudyPlan['tasks'][number]) => {
+  const startPlannedTask = useCallback(async (task: NonNullable<StudyPlan['tasks']>[number]) => {
     const subject =
       subjects.find((item) => item.id === task.subject_id) ??
       subjects.find(
@@ -687,8 +814,8 @@ export default function App() {
 
       setRewardToast(
         language === 'ar'
-          ? `تعذر بدء المهمة: ${error instanceof Error ? error.message : String(error)}`
-          : `Could not start task: ${error instanceof Error ? error.message : String(error)}`
+          ? 'تعذر بدء المهمة. حاول مرة أخرى.'
+          : 'Could not start the task. Please try again.'
       );
       window.setTimeout(() => setRewardToast(null), 5000);
     }
@@ -699,8 +826,9 @@ export default function App() {
   ]);
 
   // Ambient sound change
-  const handleSoundChange = useCallback((sound: AmbientSound) => {
-    updateAppState({ ambient_sound: sound });
+  const handleSoundChange = useCallback((sound: AmbientValue) => {
+    const storedSound: AmbientSound = sound === 'rain-quiet' || sound === 'rain-thunder' ? 'rain' : sound === 'ocean-waves' || sound === 'ocean-birds' ? 'ocean' : 'none';
+    updateAppState({ ambient_sound: storedSound });
   }, [updateAppState]);
 
 
@@ -775,32 +903,34 @@ export default function App() {
         }
 
         .studyquest-app.theme-dark {
-          --sq-bg: #03050a;
-          --sq-surface: rgba(10, 14, 24, 0.82);
-          --sq-surface-solid: #0a0f19;
-          --sq-text: #eaf4ff;
-          --sq-heading: #f8fcff;
-          --sq-muted: #8a9bb1;
-          --sq-muted-strong: #c2d3e6;
-          --sq-border: rgba(100, 205, 255, 0.16);
-          --sq-border-soft: rgba(255, 255, 255, 0.065);
-          --sq-hover: rgba(70, 190, 255, 0.07);
-          --sq-glow: rgba(0, 210, 255, 0.13);
-          background-image: radial-gradient(circle at 15% 10%, rgba(43, 95, 160, .14), transparent 26%), radial-gradient(circle at 88% 75%, rgba(107, 53, 190, .12), transparent 28%), linear-gradient(135deg,#02040a,#07101e 50%,#03050b);
+          --sq-bg: #0d1117;
+          --sq-surface: rgba(22, 28, 36, 0.96);
+          --sq-surface-solid: #161c24;
+          --sq-text: #e3e9f0;
+          --sq-heading: #f5f7fa;
+          --sq-muted: #9aa6b5;
+          --sq-muted-strong: #c4ced9;
+          --sq-border: rgba(163, 177, 194, 0.18);
+          --sq-border-soft: rgba(163, 177, 194, 0.11);
+          --sq-hover: rgba(163, 177, 194, 0.08);
+          --sq-glow: transparent;
+          background-image: radial-gradient(ellipse at 50% -15%, rgba(39, 75, 94, .17), transparent 55%), linear-gradient(180deg,#0d1117,#10151c 55%,#0d1117);
         }
 
         .studyquest-app.theme-light {
-          --sq-bg: #f3f7fc;
-          --sq-surface: rgba(255, 255, 255, 0.88);
+          --sq-bg: #f3f5f4;
+          --sq-surface: rgba(255, 255, 255, 0.94);
           --sq-surface-solid: #ffffff;
-          --sq-text: #172033;
-          --sq-muted: #667085;
-          --sq-muted-strong: #344054;
-          --sq-heading: #101828;
-          --sq-border: rgba(15, 23, 42, 0.12);
-          --sq-border-soft: rgba(15, 23, 42, 0.07);
-          --sq-hover: rgba(15, 23, 42, 0.055);
-          --sq-glow: rgba(0, 157, 255, 0.08);
+          --sq-text: #253345;
+          --sq-muted: #5d6b7d;
+          --sq-muted-strong: #405166;
+          --sq-heading: #182638;
+          --sq-border: rgba(31, 48, 67, 0.15);
+          --sq-border-soft: rgba(31, 48, 67, 0.095);
+          --sq-hover: rgba(31, 67, 76, 0.045);
+          --sq-glow: transparent;
+          background-image: none;
+          background-color: var(--sq-bg);
         }
 
         .studyquest-app.theme-ice {
@@ -812,11 +942,15 @@ export default function App() {
         .studyquest-app.theme-dark.bg-ink-800,
         .studyquest-app.theme-ice.bg-ink-800 { background-color: var(--sq-bg) !important; }
         .studyquest-app.theme-light.bg-ink-800 { background-color: var(--sq-bg) !important; }
-        .studyquest-app.theme-light .bg-ink-800 { background-color: var(--sq-bg) !important; }
-        .studyquest-app.theme-light .bg-ink-900 { background-color: #e9eef6 !important; }
+        .studyquest-app.theme-light .bg-ink-800 { background-color: var(--sq-surface-solid) !important; }
+        .studyquest-app.theme-light .bg-ink-900,
+        .studyquest-app.theme-light [class~='bg-ink-900/70'],
+        .studyquest-app.theme-light [class~='bg-ink-900/80'],
+        .studyquest-app.theme-light [class~='bg-ink-900/90'],
+        .studyquest-app.theme-light [class~='bg-ink-800/95'] { background-color: var(--sq-surface-solid) !important; }
         .studyquest-app.theme-light .bg-ink-700,
         .studyquest-app.theme-light .bg-ink-600,
-        .studyquest-app.theme-light .bg-white\/5 { background-color: var(--sq-hover) !important; }
+        .studyquest-app.theme-light [class~="bg-white/5"] { background-color: var(--sq-hover) !important; }
         .studyquest-app.theme-light .glass {
           background: var(--sq-surface) !important;
           border-color: var(--sq-border-soft) !important;
@@ -827,10 +961,9 @@ export default function App() {
         .studyquest-app.theme-light .text-gray-400,
         .studyquest-app.theme-light .text-gray-500,
         .studyquest-app.theme-light .text-gray-600 { color: var(--sq-muted) !important; }
-        .studyquest-app.theme-light .text-white { color: #111827 !important; }
-        .studyquest-app.theme-light .border-white\/5,
-        .studyquest-app.theme-light .border-white\/10,
-        .studyquest-app.theme-light .border-white\/20 { border-color: var(--sq-border) !important; }
+        .studyquest-app.theme-light [class~="border-white/5"],
+        .studyquest-app.theme-light [class~="border-white/10"],
+        .studyquest-app.theme-light [class~="border-white/20"] { border-color: var(--sq-border) !important; }
         .studyquest-app.theme-light .neon-text-cyan,
         .studyquest-app.theme-light .neon-text-emerald,
         .studyquest-app.theme-light .neon-text-amber,
@@ -888,32 +1021,24 @@ export default function App() {
         </div>
       )}
 
-      {activeTab === 'dashboard' && appState && (
-        <div className="fixed top-[4.4rem] left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 px-3 py-2 rounded-2xl border border-amber-300/20 bg-slate-950/80 backdrop-blur-xl shadow-[0_8px_30px_rgba(0,0,0,.25)]" aria-label="StudyQuest rewards">
-          <div className="flex items-center gap-1.5 text-neon-amber font-mono font-black text-sm"><span aria-hidden="true">🪙</span><span>{appState.coins.toLocaleString()}</span><span className="hidden sm:inline text-[10px] font-sans text-gray-500">Coins</span></div>
-          <span className="w-px h-4 bg-white/10" />
-          <div className="flex items-center gap-1.5 text-neon-cyan font-mono font-black text-sm"><span aria-hidden="true">💎</span><span>{appState.gems}</span></div>
-        </div>
-      )}
       {typeof document !== 'undefined' && deleteTaskId && createPortal((() => {
         const deleteTask = tomorrowPlan?.tasks?.find((item) => item.id === deleteTaskId);
         if (!deleteTask) return null;
 
         return (
-          <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/65 backdrop-blur-sm px-4">
-            <div className="w-full max-w-md rounded-3xl border border-red-300/20 bg-slate-950/95 p-6 shadow-[0_0_60px_rgba(255,70,90,.16)]">
+          <div dir={language === 'ar' ? 'rtl' : 'ltr'} className="sq-task-dialog-v2__backdrop fixed inset-0 z-[90] flex items-center justify-center bg-black/65 backdrop-blur-sm px-4">
+            <div className="sq-task-dialog-v2 sq-task-dialog-v2--delete">
               <div className="flex items-start gap-4">
                 <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border border-red-300/20 bg-red-400/10 text-2xl">
                   🗑️
                 </div>
                 <div className="min-w-0">
+                  <p className="mb-1 text-[10px] font-black uppercase tracking-[0.18em] text-red-300">{dialogText.deleteEyebrow}</p>
                   <h3 className="text-lg font-black text-white">
-                    {language === 'ar' ? 'حذف المهمة؟' : 'Delete task?'}
+                    {dialogText.deleteTitle}
                   </h3>
                   <p className="mt-2 text-sm text-gray-400">
-                    {language === 'ar'
-                      ? 'هل أنت متأكد إنك عايز تحذف هذه المهمة؟'
-                      : 'Are you sure you want to delete this task?'}
+                    {dialogText.deleteBody}
                   </p>
                   <p className="mt-2 truncate text-sm font-bold text-cyan-300">
                     {deleteTask.title}
@@ -927,7 +1052,7 @@ export default function App() {
                   onClick={() => setDeleteTaskId(null)}
                   className="rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-bold text-gray-300 transition hover:bg-white/10"
                 >
-                  {language === 'ar' ? 'إلغاء' : 'Cancel'}
+                  {dialogText.cancel}
                 </button>
 
                 <button
@@ -935,6 +1060,7 @@ export default function App() {
                   onClick={async () => {
                     try {
                       await deletePlanTask(deleteTask.id);
+            
 
                       setTomorrowPlan((current) =>
                         current
@@ -954,9 +1080,7 @@ export default function App() {
                       setDeleteTaskId(null);
 
                       setRewardToast(
-                        language === 'ar'
-                          ? 'تم حذف المهمة بنجاح.'
-                          : 'The task was deleted successfully.'
+                        dialogText.deleteSuccess
                       );
                       window.setTimeout(() => setRewardToast(null), 2600);
                     } catch (error) {
@@ -964,16 +1088,19 @@ export default function App() {
 
                       setDeleteTaskId(null);
                       setRewardToast(
-                        language === 'ar'
-                          ? `فشل الحذف: ${error instanceof Error ? error.message : String(error)}`
-                          : `Delete failed: ${error instanceof Error ? error.message : String(error)}`
+                        dialogText.deleteError
                       );
                       window.setTimeout(() => setRewardToast(null), 5000);
                     }
                   }}
-                  className="rounded-xl border border-red-300/30 bg-red-400/10 px-4 py-2.5 text-sm font-black text-red-300 transition hover:bg-red-400/20"
+                  className="rounded-xl px-4 py-2.5 text-sm font-black transition"
+                  style={{
+                    backgroundColor: 'rgba(248, 113, 113, 0.10)',
+                    border: '1px solid rgba(252, 165, 165, 0.30)',
+                    color: '#fca5a5',
+                  }}
                 >
-                  {language === 'ar' ? 'حذف المهمة' : 'Delete task'}
+                  {dialogText.deleteConfirm}
                 </button>
               </div>
             </div>
@@ -987,39 +1114,35 @@ export default function App() {
         const runningTitle =
           tomorrowPlan?.tasks?.find((item) => item.id === activePlanTaskId)?.title ??
           displayActiveSubject?.name ??
-          (language === 'ar' ? 'مهمة حالية' : 'Current task');
+          dialogText.currentTaskFallback;
 
         return (
-          <div className="fixed inset-0 z-[95] flex items-center justify-center bg-black/70 backdrop-blur-sm px-4">
-            <div className="w-full max-w-md rounded-3xl border border-violet-300/20 bg-slate-950/95 p-6 shadow-[0_0_70px_rgba(120,90,255,.18)]">
+          <div dir={language === 'ar' ? 'rtl' : 'ltr'} className="sq-task-dialog-v2__backdrop fixed inset-0 z-[95] flex items-center justify-center bg-black/70 backdrop-blur-sm px-4">
+            <div className="sq-task-dialog-v2 sq-task-dialog-v2--switch">
               <div className="flex items-start gap-4">
                 <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border border-violet-300/20 bg-violet-400/10 text-2xl">
                   ⚡
                 </div>
                 <div className="min-w-0">
                   <p className="text-[10px] uppercase tracking-[0.18em] text-violet-300 font-black">
-                    StudyQuest
+                    {dialogText.switchEyebrow}
                   </p>
                   <h3 className="mt-1 text-lg font-black text-white">
-                    {language === 'ar'
-                      ? 'عندك جلسة شغالة'
-                      : 'A focus session is running'}
+                    {dialogText.switchTitle}
                   </h3>
                   <p className="mt-2 text-sm text-gray-400">
-                    {language === 'ar'
-                      ? 'هل تريد إيقاف الجلسة الحالية وبدء المهمة الجديدة فورًا؟'
-                      : 'Do you want to stop the current session and start the new task now?'}
+                    {dialogText.switchBody}
                   </p>
 
                   <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-3">
                     <p className="text-[10px] uppercase tracking-wider text-gray-500">
-                      {language === 'ar' ? 'الحالية' : 'Current'}
+                      {dialogText.currentTask}
                     </p>
                     <p className="mt-1 truncate text-sm font-bold text-cyan-300">
                       {runningTitle}
                     </p>
                     <p className="mt-3 text-[10px] uppercase tracking-wider text-gray-500">
-                      {language === 'ar' ? 'الجديدة' : 'New task'}
+                      {dialogText.nextTask}
                     </p>
                     <p className="mt-1 truncate text-sm font-bold text-violet-300">
                       {switchTask.title}
@@ -1034,7 +1157,7 @@ export default function App() {
                   onClick={() => setSwitchTaskId(null)}
                   className="rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-bold text-gray-300 transition hover:bg-white/10"
                 >
-                  {language === 'ar' ? 'إلغاء' : 'Cancel'}
+                  {dialogText.cancel}
                 </button>
 
                 <button
@@ -1044,9 +1167,7 @@ export default function App() {
                   }}
                   className="rounded-xl border border-violet-300/30 bg-violet-400/10 px-4 py-2.5 text-sm font-black text-violet-200 transition hover:bg-violet-400/20"
                 >
-                  {language === 'ar'
-                    ? 'أوقف الحالية وابدأ الجديدة'
-                    : 'Stop current & start new'}
+                  {dialogText.switchConfirm}
                 </button>
               </div>
             </div>
@@ -1055,50 +1176,61 @@ export default function App() {
 })(), document.body)}
       {rewardToast && (
         <div
-          className={`fixed top-20 left-1/2 -translate-x-1/2 z-[9998] px-5 py-3 rounded-2xl font-black shadow-[0_0_35px_rgba(0,0,0,.25)] animate-fade-in ${
-            rewardToastIsError
-              ? 'border border-red-300/35 bg-red-400/10 text-red-300'
-              : 'border border-amber-300/35 bg-amber-400/10 text-amber-200'
-          }`}
-          role="status"
+          className={`sq-toast sq-toast--standalone ${rewardToastIsError ? 'sq-toast--error' : 'sq-toast--success'}`}
+          dir={language === 'ar' ? 'rtl' : 'ltr'}
+          role={rewardToastIsError ? 'alert' : 'status'}
+          aria-live={rewardToastIsError ? 'assertive' : 'polite'}
         >
-          {rewardToastIsError ? '⚠️' : '🪙'} {rewardToast}
+          <span className="sq-toast__icon" aria-hidden="true">
+            {rewardToastIsError ? '!' : '✓'}
+          </span>
+          <span className="sq-toast__message">{rewardToast}</span>
         </div>
       )}
 
       <main className="relative pt-20 md:pt-20 lg:pt-8 pb-24 md:pb-0 px-4 md:px-6 lg:px-10 lg:pl-[18rem]">
-        <div className="max-w-6xl mx-auto">
+        <div className="max-w-7xl 2xl:max-w-[1440px] mx-auto">
           {/* Dashboard tab */}
           {activeTab === 'dashboard' && (
             <div className="flex flex-col items-center gap-8 animate-fade-in">
               {/* Timer section */}
-              <section className="w-full flex flex-col items-center gap-6 py-4">
-                <PomodoroTimer
-                  t={t}
-                  durationMinutes={currentDuration}
-                  remainingSeconds={remainingSeconds}
-                  isRunning={isRunning}
-                  onStart={handleStart}
-                  onPause={handlePause}
-                  onReset={handleReset}
-                  subjectName={timerDisplayName}
-                />
-
-                <StudyAudio language={language} />
-                {/* Ambient sound controls remain available for the existing rain/ambient modes. */}
-                <div className="flex items-center gap-3">
-                  <span className="text-xs font-medium text-gray-500 uppercase tracking-wider">{TRANSLATIONS[language].ambient}</span>
-                  <AmbientSoundWidget
-                    language={language}
+              <div className="w-full grid gap-5 xl:grid-cols-[minmax(360px,.92fr)_minmax(0,1.08fr)] xl:items-stretch">
+                <section className="focus-stage w-full flex flex-col items-center gap-5 rounded-3xl p-5 md:p-7">
+                  <div className="w-full flex items-center justify-between gap-3 border-b border-[var(--sq-border-soft)] pb-3">
+                    <div><p className="text-xs font-bold uppercase tracking-[.16em] text-[var(--sq-muted)]">{language === 'ar' ? 'جلسة التركيز' : language === 'fr' ? 'Session de concentration' : language === 'de' ? 'Fokus-Sitzung' : language === 'ja' ? '集中セッション' : 'Focus session'}</p><p className="mt-1 text-sm font-semibold text-[var(--sq-heading)]">{timerDisplayName || t('selectSubjectHint')}</p></div>
+                    <span className={'focus-status ' + (isRunning ? 'is-running' : '')}>{isRunning ? t('inFocus') : t('ready')}</span>
+                  </div>
+                  <PomodoroTimer
                     t={t}
-                    value={(appState?.ambient_sound as AmbientSound) ?? 'none'}
-                    onChange={handleSoundChange}
+                    durationMinutes={currentDuration}
+                    remainingSeconds={remainingSeconds}
+                    isRunning={isRunning}
+                    onStart={handleStart}
+                    onPause={handlePause}
+                    onReset={handleReset}
+                    subjectName={timerDisplayName}
                   />
-                </div>
-              </section>
+                  <div className="w-full max-w-2xl border-t border-[var(--sq-border-soft)] pt-4">
+                    <StudyAudio language={language} />
+                    <div className="mt-3 flex flex-wrap items-center gap-3">
+                      <span className="text-xs font-medium text-[var(--sq-muted)]">{TRANSLATIONS[language].ambient}</span>
+                      <AmbientSoundWidget
+                        language={language}
+                        t={t}
+                        value={appState?.ambient_sound === 'rain' ? 'rain-quiet' : appState?.ambient_sound === 'ocean' ? 'ocean-waves' : 'none'}
+                        onChange={handleSoundChange}
+                      />
+                    </div>
+                  </div>
+                </section>
 
-              <TomorrowPlanner language={language} t={t} onPlanReady={(plan) => { setTomorrowPlan(plan); setPlanDateLabel('tomorrow'); }} />
-              <StudyAssistant language={language} t={t} />
+                <Suspense fallback={<div role="status" className="w-full rounded-2xl sq-shell-card p-5 text-sm text-[var(--sq-muted)]">{language === 'ar' ? 'جارٍ تحميل أدوات الدراسة…' : 'Loading study tools…'}</div>}>
+                  <div className="flex w-full flex-col gap-5">
+                    <TomorrowPlanner language={language} t={t} onPlanReady={(plan) => { setTomorrowPlan(plan); setPlanDateLabel(plan?.plan_date === localCalendarDate(0) ? 'today' : 'tomorrow'); }} />
+                    <StudyAssistant language={language} />
+                  </div>
+                </Suspense>
+              </div>
 
               {tomorrowPlan?.tasks?.length ? (
                 <section className="w-full rounded-3xl sq-shell-card border border-violet-300/15 p-4 md:p-5">
@@ -1109,7 +1241,7 @@ export default function App() {
                     </div>
                     <span className="premium-tag shrink-0">{t('aiGenerated')}</span>
                   </div>
-                  {planDateLabel === 'today' && (() => {
+                  {(() => {
                     const completedTasks =
                       dailyAIStatus?.completed_tasks ??
                       tomorrowPlan.tasks.filter((task) => task.status === 'completed').length;
@@ -1135,10 +1267,11 @@ export default function App() {
                         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                           <div className="min-w-0">
                             <p className="text-[10px] font-black uppercase tracking-[0.18em] text-violet-300">
-                              {language === 'ar' ? 'تقدم اليوم' : 'Today’s progress'}
+                              {planDateLabel === 'today' ? (language === 'ar' ? 'تقدم اليوم' : 'Today’s progress') : (language === 'ar' ? 'تقدم خطة بكرة' : 'Tomorrow’s plan progress')}
                             </p>
 
-                            <h4 className="mt-1 text-base md:text-lg font-black text-[var(--sq-heading)]">
+                            <h4 className="mt-1 flex items-center gap-2 text-base md:text-lg font-black text-[var(--sq-heading)]">
+                              <span aria-label={dayCorrect ? (language === 'ar' ? 'اكتملت مهام اليوم' : 'Day tasks complete') : (language === 'ar' ? 'مهام اليوم لم تكتمل بعد' : 'Day tasks not complete yet')} className={`grid h-7 w-7 shrink-0 place-items-center rounded-md border text-sm ${dayCorrect ? 'border-emerald-400/40 bg-emerald-400/15 text-emerald-300' : 'border-white/15 bg-white/5 text-[var(--sq-muted)]'}`}>{dayCorrect ? '✓' : '□'}</span>
                               {dayCorrect
                                 ? (language === 'ar'
                                     ? '⭐ يوم صحيح — أنجزت كل المهام'
@@ -1186,13 +1319,13 @@ export default function App() {
                             </div>
 
                             <div className="shrink-0 text-xs font-black text-neon-amber">
-                              1 min = 1 🪙 · max 50/day
+                              1 min = 1 🪙 · max 60/day
                             </div>
                           </div>
 
                           <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
                             {[15, 25, 45, 60].map((minutes) => {
-                              const coins = Math.min(50, minutes);
+                              const coins = Math.min(60, minutes);
 
                               return (
                                 <div
@@ -1226,11 +1359,12 @@ export default function App() {
                               <div className="flex flex-wrap items-center gap-2">
                                 <h4 className="font-bold text-sm md:text-base text-[var(--sq-heading)]">{task.title}</h4>
                                 {(isActive || isNext) && <span className="premium-tag">{isActive ? 'Running' : t('currentTask')}</span>}
-                                {isDone && <span className="text-[10px] font-black text-emerald-300">{t('completedTask')}</span>}
+                                {isDone && <span className="inline-flex items-center gap-1 rounded-full border border-emerald-400/25 bg-emerald-400/10 px-2 py-1 text-[10px] font-black text-emerald-300"><span aria-hidden="true">✓</span>{t('completedTask')}</span>}
                               </div>
                               <p className="text-xs text-[var(--sq-muted)] mt-1">{task.duration_minutes} {t('minutes')}{task.start_at ? ` · ${new Date(task.start_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''}</p>
                               {task.notes && <p className="text-xs text-[var(--sq-muted-strong)] mt-1 line-clamp-2">{task.notes}</p>}
                             </div>
+                            {!isDone && (
                             <button
                               type="button"
                               onClick={async () => {
@@ -1256,16 +1390,22 @@ export default function App() {
                                   console.error('[StudyQuest] delete task failed:', error);
                                   setRewardToast(
                                     language === 'ar'
-                                      ? `فشل الحذف: ${error instanceof Error ? error.message : String(error)}`
-                                      : `Delete failed: ${error instanceof Error ? error.message : String(error)}`
+                                      ? 'تعذر حذف المهمة. حاول مرة أخرى.'
+                                      : 'Could not delete the task. Please try again.'
                                   );
                                   window.setTimeout(() => setRewardToast(null), 5000);
                                 }
                               }}
-                              className="shrink-0 px-4 py-2.5 rounded-xl bg-red-400/10 border border-red-300/25 text-red-300 text-sm font-bold"
+                              className="shrink-0 px-4 py-2.5 rounded-xl text-sm font-bold"
+                              style={{
+                                backgroundColor: 'rgba(248, 113, 113, 0.10)',
+                                border: '1px solid rgba(252, 165, 165, 0.25)',
+                                color: '#fca5a5',
+                              }}
                             >
                               {language === 'ar' ? 'حذف' : 'Delete'}
                             </button>
+                            )}
                             {!isDone && <button type="button" onClick={async () => {
                               const currentTimer = focusTimer.load();
 
@@ -1292,7 +1432,7 @@ export default function App() {
                   <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
                     <div>
                       <p className="text-[11px] text-neon-amber uppercase tracking-wider font-black">Coin Economy</p>
-                      <h3 className="mt-1 text-sm md:text-base font-black text-[var(--sq-heading)]">50 Coins maximum from study rewards each day</h3>
+                      <h3 className="mt-1 text-sm md:text-base font-black text-[var(--sq-heading)]">60 Coins maximum from study rewards each day</h3>
                       <p className="mt-1 text-[11px] text-[var(--sq-muted)]">1 verified study minute = 1 Coin, until the daily cap is reached. Coins are earned through study, not handed out for opening the app.</p>
                     </div>
                     <div className="shrink-0 rounded-xl border border-amber-300/20 bg-amber-300/5 px-4 py-3 text-center">
@@ -1304,7 +1444,7 @@ export default function App() {
                     {[25, 45, 60].map((minutes) => (
                       <div key={minutes} className="rounded-xl border border-white/10 bg-white/[0.03] p-2.5 text-center">
                         <p className="text-[10px] text-[var(--sq-muted)]">{minutes} {t('minutes')}</p>
-                        <p className="mt-1 text-xs font-black text-neon-amber">+{Math.min(50, minutes)} {t('coinsShort')}</p>
+                        <p className="mt-1 text-xs font-black text-neon-amber">+{Math.min(60, minutes)} {t('coinsShort')}</p>
                       </div>
                     ))}
                   </div>
@@ -1359,16 +1499,16 @@ export default function App() {
           {/* Profile */}
           {activeTab === 'profile' && (
             <div className="flex flex-col gap-6">
-              <ProfilePage language={language} t={t} />
+              <Suspense fallback={<div role="status" className="sq-shell-card rounded-2xl p-5 text-sm text-[var(--sq-muted)]">{language === 'ar' ? 'جارٍ تحميل الملف الشخصي…' : 'Loading profile…'}</div>}><ProfilePage language={language} t={t} /></Suspense>
             </div>
           )}
 
           {/* Leaderboard + Safe Study Lounge */}
-          {activeTab === 'leaderboards' && <Leaderboard language={language} t={(key) => TRANSLATIONS[language][key as TranslationKey]} />}
+          {activeTab === 'leaderboards' && <Suspense fallback={<div role="status" className="sq-shell-card rounded-2xl p-5 text-sm text-[var(--sq-muted)]">{language === 'ar' ? 'جارٍ تحميل لوحة الترتيب…' : 'Loading leaderboard…'}</div>}><Leaderboard language={language} t={(key) => TRANSLATIONS[language][key as TranslationKey]} /></Suspense>}
 
           {/* Premium world */}
-          {activeTab === 'skins' && <PremiumPage language={language} t={t} />}
-          {activeTab === 'admin' && isAdmin && <AdminDashboard language={language} />}
+          {activeTab === 'skins' && <Suspense fallback={<div role="status" className="sq-shell-card rounded-2xl p-5 text-sm text-[var(--sq-muted)]">{language === 'ar' ? 'جارٍ تحميل Premium…' : 'Loading Premium…'}</div>}><PremiumPage language={language} t={t} /></Suspense>}
+          {activeTab === 'admin' && isAdmin && <Suspense fallback={<div role="status" className="sq-shell-card rounded-2xl p-5 text-sm text-[var(--sq-muted)]">{language === 'ar' ? 'جارٍ تحميل لوحة التحكم…' : 'Loading admin dashboard…'}</div>}><AdminDashboard language={language} /></Suspense>}
         </div>
       </main>
 

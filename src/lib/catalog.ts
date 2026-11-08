@@ -15,7 +15,7 @@ export async function loadPetCatalog(): Promise<CloudPetDefinition[]> {
   const { data, error } = await supabase.from('catalog_items')
     .select('item_id,name,rarity,coin_price,gem_price,purchasable,event_only,image_url,premium_only,sort_order')
     .eq('item_type','pet').order('sort_order',{ascending:true}).order('name',{ascending:true});
-  if (error || !data?.length) return fallback;
+  if (error || !data) return fallback;
   const staticById = new Map(PET_CATALOG.map((p) => [p.id,p]));
   return data.map((row) => {
     const base = staticById.get(row.item_id);

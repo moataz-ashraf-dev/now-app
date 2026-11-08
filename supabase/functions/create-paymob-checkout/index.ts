@@ -47,6 +47,7 @@ Deno.serve(async (req) => {
     const body = await req.json();
     const plan = body.plan === 'yearly' ? 'yearly' : 'monthly';
     const paymentMethod = String(body.payment_method || 'cards');
+    if (!['cards', 'apple_pay', 'google_pay', 'wallets'].includes(paymentMethod)) return json({ error: 'invalid_payment_method' }, 400);
     const phone = String(body.phone || '').trim();
     if (!/^\+?[0-9][0-9\s()-]{7,20}$/.test(phone)) return json({ error: 'valid_phone_required' }, 400);
     const targetNet = plan === 'yearly' ? yearlyNetCents : monthlyNetCents;
@@ -72,10 +73,18 @@ Deno.serve(async (req) => {
     });
     const payload = await intention.json();
     if (!intention.ok || !payload.client_secret) {
-      await admin.from('payment_orders').update({ status: 'failed', provider_payload: payload }).eq('id', order.id);
+      const { error: failRecordError } = await admin.from('payment_orders').update({ status: 'failed', provider_payload: payload }).eq('id', order.id);
+      if (failRecordError) throw failRecordError;
       return json({ error: 'paymob_intention_failed' }, 502);
     }
-    await admin.from('payment_orders').update({ provider_intention_id: payload.id, provider_order_id: payload.intention_order_id, provider_payload: payload }).eq('id', order.id);
+    const safeProviderPayload = { ...payload };
+    delete safeProviderPayload.client_secret;
+    const { error: providerUpdateError } = await admin.from('payment_orders').update({ provider_intention_id: payload.id, provider_order_id: payload.intention_order_id, provider_payload: safeProviderPayload }).eq('id', order.id);
+    if (providerUpdateError) {
+      const { error: failRecordError } = await admin.from('payment_orders').update({ status: 'failed' }).eq('id', order.id);
+      if (failRecordError) console.error('Could not mark unlinked checkout order failed', failRecordError);
+      throw providerUpdateError;
+    }
     const checkoutUrl = `https://accept.paymob.com/unifiedcheckout/?publicKey=${encodeURIComponent(paymobPublic)}&clientSecret=${encodeURIComponent(payload.client_secret)}`;
     return json({ checkoutUrl, orderId: order.id });
   } catch (e) {
@@ -83,3 +92,4 @@ Deno.serve(async (req) => {
     return json({ error: e instanceof Error ? e.message : 'checkout_failed' }, 500);
   }
 });
+

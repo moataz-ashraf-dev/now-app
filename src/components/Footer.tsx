@@ -54,29 +54,24 @@ export default function Footer({ t, language = 'en' }: Props) {
 
   return (
     <>
-      <footer className="hidden md:block mt-12 border-t border-white/5 bg-ink-900/80">
-        <div className="max-w-7xl mx-auto px-6 lg:px-10 py-8">
-          <div className="flex items-center justify-between gap-8">
-            <div className="flex items-center gap-5 text-sm text-gray-500">
-              <button type="button" onClick={() => open('help')} className="flex items-center gap-1.5 hover:text-neon-cyan transition-colors">
-                <HelpCircle className="w-4 h-4" /> {t('help')}
-              </button>
-              <button type="button" onClick={() => open('privacy')} className="flex items-center gap-1.5 hover:text-neon-cyan transition-colors">
-                <Shield className="w-4 h-4" /> {t('privacy')}
-              </button>
-              <button type="button" onClick={() => open('contact')} className="flex items-center gap-1.5 hover:text-neon-cyan transition-colors">
-                <Mail className="w-4 h-4" /> {t('contact')}
-              </button>
-            </div>
-            <div className="flex-1 text-center">
-              <p className="font-display font-bold text-lg neon-text-emerald text-neon-emerald motivational-shift">
-                {t(MOTIVATIONAL_KEYS[Math.floor(Date.now() / 5000) % MOTIVATIONAL_KEYS.length])}
-              </p>
-            </div>
-            <div className="flex items-center gap-1.5 text-sm text-gray-500">
-              <span>{t('madeWith')}</span><Heart className="w-4 h-4 text-neon-rose fill-neon-rose" /><span>StudyQuest</span>
+      <footer className="app-footer hidden md:block mt-10 lg:pl-[18rem]" dir={language === 'ar' ? 'rtl' : 'ltr'}>
+        <div className="app-footer__inner max-w-[1440px] mx-auto px-5 md:px-8 py-5">
+          <div className="app-footer__brand">
+            <span className="app-footer__mark" aria-hidden="true"><BookOpen className="w-4 h-4" /></span>
+            <div className="app-footer__brand-copy">
+              <strong>StudyQuest</strong>
+              <span>{t('madeWith')} <Heart className="app-footer__heart" /></span>
             </div>
           </div>
+          <p className="app-footer__quote">
+            <span className="app-footer__quote-dot" aria-hidden="true" />
+            {t(MOTIVATIONAL_KEYS[Math.floor(Date.now() / 5000) % MOTIVATIONAL_KEYS.length])}
+          </p>
+          <nav className="app-footer__links" aria-label={language === 'ar' ? 'روابط المساعدة' : 'Help and policies'}>
+            <button type="button" onClick={() => open('help')}><HelpCircle className="w-4 h-4" /> {t('help')}</button>
+            <button type="button" onClick={() => open('privacy')}><Shield className="w-4 h-4" /> {t('privacy')}</button>
+            <button type="button" onClick={() => open('contact')}><Mail className="w-4 h-4" /> {t('contact')}</button>
+          </nav>
         </div>
       </footer>
 

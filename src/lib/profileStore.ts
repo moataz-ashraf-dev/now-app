@@ -125,7 +125,7 @@ function readProfile(): ProfileData {
     return { unlockedPetIds: parsed.unlockedPetIds ?? d.unlockedPetIds, unlockedSkinIds: parsed.unlockedSkinIds ?? d.unlockedSkinIds, equippedPetId: parsed.equippedPetId ?? d.equippedPetId, equippedSkins: { ...d.equippedSkins, ...parsed.equippedSkins }, avatarUrl: parsed.avatarUrl ?? d.avatarUrl, avatarTheme: (parsed.avatarTheme as AvatarTheme) ?? d.avatarTheme, avatarPetPosition: (parsed.avatarPetPosition as AvatarPetPosition) ?? d.avatarPetPosition };
   } catch { return getDefaultProfile(); }
 }
-function writeProfile(data: ProfileData) { try { localStorage.setItem(getUserStorageKey(PROFILE_STORAGE_KEY), JSON.stringify(data)); window.dispatchEvent(new CustomEvent('studyquest:profile-updated')); } catch {} }
+function writeProfile(data: ProfileData) { try { localStorage.setItem(getUserStorageKey(PROFILE_STORAGE_KEY), JSON.stringify(data)); window.dispatchEvent(new CustomEvent('studyquest:profile-updated')); } catch { /* Local storage can be unavailable in private or restricted contexts. */ } }
 
 async function loadCloudProfile(): Promise<ProfileData | null> {
   const userId = getActiveUserId();
@@ -269,6 +269,15 @@ export const profileStore = {
     const localUrl = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(new Error('image_processing_failed')); reader.readAsDataURL(compressed); });
     return this.updateAvatarSettings({ avatarUrl: localUrl });
   },
+
+  async removeAvatar(): Promise<ProfileData> {
+    const activeUserId = getActiveUserId();
+    if (activeUserId !== 'guest' && (!isSupabaseConfigured || !navigator.onLine)) {
+      throw new Error('connect_to_remove_avatar');
+    }
+    return this.updateAvatarSettings({ avatarUrl: null });
+  },
+
   async purchase(itemType: 'pet' | 'skin', itemId: string, currency: 'coins' | 'gems') {
     const def = itemType === 'pet' ? PET_CATALOG.find((item) => item.id === itemId) : SKIN_CATALOG.find((item) => item.id === itemId);
     if (!def) throw new Error('item_not_found');

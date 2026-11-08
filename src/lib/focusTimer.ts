@@ -287,13 +287,40 @@ export const focusTimer = {
     if (
       current.serverBacked &&
       current.operationId &&
+      !onlineServerSessionAllowed()
+    ) {
+      const pending: FocusTimerState = {
+        ...current,
+        status: 'paused',
+        remainingSeconds: 0,
+        endsAt: null,
+      };
+      write(pending);
+      return { state: pending, reward: null };
+    }
+
+    if (
+      current.serverBacked &&
+      current.operationId &&
       onlineServerSessionAllowed()
     ) {
-      const { data, error } = await supabase.rpc('focus_timer_complete', {
-        p_operation_id: current.operationId,
-      });
-
-      if (error) throw error;
+      let data: unknown;
+      try {
+        const response = await supabase.rpc('focus_timer_complete', {
+          p_operation_id: current.operationId,
+        });
+        if (response.error) throw response.error;
+        data = response.data;
+      } catch (error) {
+        const pending: FocusTimerState = {
+          ...current,
+          status: 'paused',
+          remainingSeconds: 0,
+          endsAt: null,
+        };
+        write(pending);
+        throw error;
+      }
 
       reward = data as {
         session_id: string;

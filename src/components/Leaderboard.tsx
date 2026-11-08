@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Flag, ShieldCheck, Filter, FileCheck2, FlagTriangleRight, Users, Trophy, Globe2, MapPin, X, Loader2, GraduationCap, LogIn, LogOut, Send, MessageCircle } from 'lucide-react';
+import { Flag, ShieldCheck, Filter, FileCheck2, FlagTriangleRight, Users, Trophy, Globe2, MapPin, X, Loader2, LogIn, LogOut, Send, MessageCircle, Medal } from 'lucide-react';
 import { isSupabaseConfigured, supabase } from '@/lib/supabase';
 import { useAuth } from '@/auth/useAuth';
 import { getActiveUserId, getUserStorageKey } from '@/lib/storageIdentity';
-import ProfileAvatar, { avatarThemeDef, type AvatarPetPosition, type AvatarTheme } from '@/components/ProfileAvatar';
+import ProfileAvatar, { type AvatarPetPosition, type AvatarTheme } from '@/components/ProfileAvatar';
+import PublicStudentProfileModal from '@/components/PublicStudentProfileModal';
 
 type TranslationFn = (key: string) => string;
 type LanguageCode = 'en' | 'de' | 'ja' | 'ar' | 'fr';
@@ -66,6 +67,8 @@ export default function Leaderboard({ t, language = 'en' }: { t: TranslationFn; 
   const [rankMessageText, setRankMessageText] = useState('');
   const [rankChatBusy, setRankChatBusy] = useState(false);
   const [rankChatError, setRankChatError] = useState('');
+  const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
+
 
   useEffect(() => {
     let cancelled = false;
@@ -84,7 +87,7 @@ export default function Leaderboard({ t, language = 'en' }: { t: TranslationFn; 
     if (!user || !isSupabaseConfigured || !navigator.onLine) return;
     supabase.from('study_room_members').select('room_id').eq('user_id', user.id).then(({ data }) => {
       if (data) setJoinedRooms(data.map((row) => row.room_id));
-    }).catch(() => undefined);
+    }, () => undefined);
   }, [user?.id]);
 
   const loadRankMessages = async (chatScope: Scope) => {
@@ -216,6 +219,7 @@ export default function Leaderboard({ t, language = 'en' }: { t: TranslationFn; 
 
   const ranked = useMemo(() => students.map((s, i) => ({ ...s, rank: i + 1 })), [students]);
   const podium = ranked.slice(0, 3);
+  const myRank = ranked.findIndex((student) => student.user_id === user?.id) + 1;
   const rest = ranked.slice(3);
 
   const submitReport = async () => {
@@ -226,21 +230,21 @@ export default function Leaderboard({ t, language = 'en' }: { t: TranslationFn; 
   };
 
   return (
-    <div className="flex flex-col gap-8 animate-fade-in pb-8">
+    <div className="leaderboard-page flex flex-col gap-8 animate-fade-in pb-8">
       <section className="flex flex-col gap-4">
-        <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-4">
-          <div><div className="flex items-center gap-2 text-neon-cyan mb-2"><Trophy className="w-5 h-5" /><span className="text-xs font-bold uppercase tracking-[0.2em]">{t('leaderboard')}</span></div><h1 className="font-display text-2xl md:text-3xl font-extrabold text-gray-200">{t('topStudents')}</h1><p className="text-sm text-gray-500 mt-1">{scope === 'global' ? t('globalRank') : scope === 'international' ? t('internationalRanking') : t('regionalRanking')}</p></div>
-          <div className="inline-flex flex-wrap p-1 rounded-xl glass border border-white/10 self-start md:self-auto">
-            <button onClick={() => setScope('city')} className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold ${scope === 'city' ? 'bg-neon-emerald/10 text-neon-emerald' : 'text-gray-500'}`}><MapPin className="w-4 h-4" />{t('regionalRank')}</button>
-            <button onClick={() => setScope('international')} className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold ${scope === 'international' ? 'bg-neon-cyan/10 text-neon-cyan' : 'text-gray-500'}`}><Globe2 className="w-4 h-4" />{t('internationalRanking')}</button>
-            <button onClick={() => setScope('global')} className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold ${scope === 'global' ? 'bg-neon-violet/10 text-neon-violet' : 'text-gray-500'}`}><Globe2 className="w-4 h-4" />{t('globalRank')}</button>
+        <div className="rank-page-header flex flex-col md:flex-row md:items-end md:justify-between gap-4">
+          <div><div className="flex items-center gap-2 text-neon-cyan mb-2"><Trophy className="w-5 h-5" /><span className="text-xs font-bold uppercase tracking-[0.2em]">{t('leaderboard')}</span></div><h1 className="rank-page-title font-display text-3xl md:text-4xl font-extrabold text-gray-200">{t('topStudents')}</h1><p className="text-sm text-gray-500 mt-1">{scope === 'global' ? t('globalRank') : scope === 'international' ? t('internationalRanking') : t('regionalRanking')}</p><div className="rank-header-meta mt-4 flex flex-wrap gap-2"><span><Users className="h-3.5 w-3.5" />{ranked.length} {language === 'ar' ? 'متصدر' : 'students'}</span>{myRank > 0 && <span><Medal className="h-3.5 w-3.5" />{language === 'ar' ? `ترتيبك #${myRank}` : `Your rank #${myRank}`}</span>}</div></div>
+          <div className="rank-scope-switch inline-flex flex-wrap p-1 rounded-xl glass border border-white/10 self-start md:self-auto">
+            <button aria-pressed={scope === 'city'} onClick={() => setScope('city')} className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold ${scope === 'city' ? 'bg-neon-emerald/10 text-neon-emerald' : 'text-gray-500'}`}><MapPin className="w-4 h-4" />{t('regionalRank')}</button>
+            <button aria-pressed={scope === 'international'} onClick={() => setScope('international')} className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold ${scope === 'international' ? 'bg-neon-cyan/10 text-neon-cyan' : 'text-gray-500'}`}><Globe2 className="w-4 h-4" />{t('internationalRanking')}</button>
+            <button aria-pressed={scope === 'global'} onClick={() => setScope('global')} className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold ${scope === 'global' ? 'bg-neon-violet/10 text-neon-violet' : 'text-gray-500'}`}><Globe2 className="w-4 h-4" />{t('globalRank')}</button>
           </div>
         </div>
         {!user && <p className="text-xs text-neon-amber">{copy.signIn}</p>}
         {error && <p className="text-xs text-neon-rose" role="alert">{error.replace(/_/g, ' ')}</p>}
         {loading ? <div className="flex justify-center py-12"><Loader2 className="w-6 h-6 animate-spin text-neon-cyan" /></div> : ranked.length === 0 ? <div className="rounded-2xl glass border border-white/10 p-8 text-center text-sm text-gray-500">{copy.empty}</div> : <>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">{podium.map((student) => <div key={student.user_id} className="rounded-2xl border border-neon-cyan/20 bg-white/[0.03] p-5 flex flex-col items-center text-center"><ProfileAvatar avatarUrl={student.avatar_url} fallbackPetId={student.equipped_pet_id || 'sparky'} petPosition={(student.avatar_pet_position as AvatarPetPosition) || 'bottom-right'} theme={(student.avatar_theme as AvatarTheme) || 'ice'} size="md" /><div className="mt-3 text-[10px] uppercase tracking-widest text-gray-500 mb-1">#{student.rank}</div><div className="font-display font-bold text-gray-200 truncate max-w-full">{student.display_name}</div><div className="text-xs text-gray-500 mt-1">{t('level')} {student.level} · {student.current_streak} {t('days')}</div><div className="mt-2 text-[10px] text-neon-amber">{student.owned_pet_count ?? 0} {language === 'ar' ? 'حيوانات مملوكة' : 'pets owned'}</div><div className="mt-3 font-mono font-bold text-neon-cyan">{student.total_xp.toLocaleString()} XP</div>{(student.country_code || student.city) && <div className="mt-1 text-[10px] text-gray-600">{student.country_code || ''}{student.city ? ` · ${student.city}` : ''}</div>}</div>)}</div>
-          <div className="rounded-2xl glass border border-white/10 overflow-hidden"><div className="grid grid-cols-[3rem_1fr_4.5rem_5.5rem_6rem] gap-2 px-4 py-3 border-b border-white/10 text-[10px] uppercase tracking-wider text-gray-500"><span>{t('rank')}</span><span>{t('topStudents')}</span><span>{t('level')}</span><span>{t('streak')}</span><span>XP</span></div>{rest.map((student) => <div key={student.user_id} className="grid grid-cols-[3rem_1fr_4.5rem_5.5rem_6rem] gap-2 items-center px-4 py-3 border-b border-white/5 last:border-b-0"><span className="font-mono text-sm text-gray-500">#{student.rank}</span><span className="flex items-center gap-2 min-w-0"><ProfileAvatar avatarUrl={student.avatar_url} fallbackPetId={student.equipped_pet_id || 'sparky'} petPosition={(student.avatar_pet_position as AvatarPetPosition) || 'bottom-right'} theme={(student.avatar_theme as AvatarTheme) || 'ice'} size="sm" /><span className="min-w-0"><span className="block font-semibold text-sm text-gray-200 truncate">{student.display_name}</span><span className="block text-[9px] text-gray-600 truncate">{student.country_code || ''}{student.city ? ` · ${student.city}` : ''} · {student.owned_pet_count ?? 0} {language === 'ar' ? 'حيوانات' : 'pets'}</span></span></span><span className="text-xs text-gray-400">{student.level}</span><span className="text-xs text-gray-400">{student.current_streak}d</span><span className="text-xs font-mono font-bold text-neon-cyan">{student.total_xp}</span></div>)}</div>
+          <div className="rank-podium grid grid-cols-1 md:grid-cols-3 gap-4 items-stretch">{podium.map((student) => <div key={student.user_id} data-rank={student.rank} role="button" tabIndex={student.user_id === user?.id ? -1 : 0} onClick={() => { if (student.user_id !== user?.id) setSelectedStudent(student); }} onKeyDown={(event) => { if ((event.key === 'Enter' || event.key === ' ') && student.user_id !== user?.id) { event.preventDefault(); setSelectedStudent(student); } }} className={`group rounded-2xl border border-neon-cyan/20 bg-white/[0.03] p-5 flex flex-col items-center text-center transition ${student.user_id === user?.id ? '' : 'cursor-pointer hover:-translate-y-1 hover:border-neon-cyan/50 hover:bg-white/[0.06]'}`}><ProfileAvatar avatarUrl={student.avatar_url} fallbackPetId={student.equipped_pet_id || 'sparky'} petPosition={(student.avatar_pet_position as AvatarPetPosition) || 'bottom-right'} theme={(student.avatar_theme as AvatarTheme) || 'ice'} frameId={student.equipped_frame_id} size="md" /><div className={`mt-3 text-[10px] uppercase tracking-widest mb-1 ${student.rank === 1 ? 'text-amber-200' : 'text-gray-500'}`}><Medal className="inline h-3 w-3 me-1" />#{student.rank}</div><div className="font-display font-bold text-gray-100 truncate max-w-full">{student.display_name}</div><div className="text-xs text-gray-500 mt-1">{t('level')} {student.level} · {student.current_streak} {t('days')}</div><div className="mt-2 text-[10px] text-neon-amber">{student.owned_pet_count ?? 0} {language === 'ar' ? 'حيوانات مملوكة' : 'pets owned'}</div><div className="mt-3 font-mono font-bold text-neon-cyan">{student.total_xp.toLocaleString()} XP</div>{(student.country_code || student.city) && <div className="mt-1 text-[10px] text-gray-600">{student.country_code || ''}{student.city ? ` · ${student.city}` : ''}</div>}</div>)}</div>
+          <div className="rank-roster rounded-2xl glass border border-white/10 overflow-hidden"><div className="hidden sm:grid grid-cols-[3.5rem_1fr_5rem_6rem_7rem] gap-3 px-5 py-3 border-b border-white/10 text-[10px] uppercase tracking-wider text-gray-500"><span>{t('rank')}</span><span>{t('topStudents')}</span><span>{t('level')}</span><span>{t('streak')}</span><span>XP</span></div>{rest.map((student) => <div key={student.user_id} data-rank={student.rank} role="button" tabIndex={student.user_id === user?.id ? -1 : 0} onClick={() => { if (student.user_id !== user?.id) setSelectedStudent(student); }} onKeyDown={(event) => { if ((event.key === 'Enter' || event.key === ' ') && student.user_id !== user?.id) { event.preventDefault(); setSelectedStudent(student); } }} className={`rank-roster-row grid grid-cols-[2.5rem_1fr_auto] sm:grid-cols-[3.5rem_1fr_5rem_6rem_7rem] gap-2 sm:gap-3 items-center px-4 sm:px-5 py-3 border-b border-white/5 last:border-b-0 transition ${student.user_id === user?.id ? '' : 'hover:bg-white/[0.04] cursor-pointer'}`}><span className="font-mono text-sm text-gray-500">#{student.rank}</span><span className="flex items-center gap-2 min-w-0"><ProfileAvatar avatarUrl={student.avatar_url} fallbackPetId={student.equipped_pet_id || 'sparky'} petPosition={(student.avatar_pet_position as AvatarPetPosition) || 'bottom-right'} theme={(student.avatar_theme as AvatarTheme) || 'ice'} size="sm" /><span className="min-w-0"><span className="block font-semibold text-sm text-gray-200 truncate">{student.display_name}</span><span className="block text-[9px] text-gray-600 truncate">{student.country_code || ''}{student.city ? ` · ${student.city}` : ''} · {student.owned_pet_count ?? 0} {language === 'ar' ? 'حيوانات' : 'pets'}</span></span></span><span className="hidden sm:block text-xs text-gray-400">{student.level}</span><span className="hidden sm:block text-xs text-gray-400">{student.current_streak}d</span><span className="text-xs font-mono font-bold text-neon-cyan">{student.total_xp.toLocaleString()} XP</span></div>)}</div>
         </>}
         {scope !== 'global' && <section className="rank-scope-chat rounded-2xl glass border border-neon-cyan/20 overflow-hidden">
           <div className="px-4 py-3 border-b border-white/10 flex items-center justify-between gap-3">
@@ -254,6 +258,8 @@ export default function Leaderboard({ t, language = 'en' }: { t: TranslationFn; 
           {rankChatError && <p className="px-3 pb-3 text-[9px] text-neon-rose">{rankChatError}</p>}
         </section>}
       </section>
+
+      {selectedStudent && <PublicStudentProfileModal student={selectedStudent} language={language} onClose={() => setSelectedStudent(null)} t={t} />}
 
       <section className="flex flex-col gap-4">
         <div><div className="flex items-center gap-2 text-neon-emerald mb-2"><Users className="w-5 h-5" /><span className="text-xs font-bold uppercase tracking-[0.2em]">{t('safeStudyLounge')}</span></div><h2 className="font-display text-xl md:text-2xl font-extrabold text-gray-200">{t('studyRooms')}</h2><p className="text-xs text-gray-500 mt-1">{copy.lounge}</p></div>

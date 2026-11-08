@@ -11,7 +11,7 @@ type Props = {
   t: (key: TranslationKey) => string;
 };
 
-export default function PetCard({ petName, petId, petXp, petXpMax, language, t }: Props) {
+export default function PetCard({ petName, petId, petXp, petXpMax, t }: Props) {
   const hasPet = Boolean(petId && petName);
   const visual = getPetVisual(petId || 'sparky');
   const xpPercent = Math.min(100, (petXp / Math.max(1, petXpMax)) * 100);

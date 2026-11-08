@@ -51,7 +51,6 @@ const STARS_PER_LEVEL = 50;
 const STUDY_HOURS_GOAL = 20;
 
 const PROFILE_HEADER_KEY = 'studyquest_profile_header_v1';
-const PREMIUM_PET_IDS = new Set(['frost-dragon','starlight-unicorn','solar-tiger','magma-trex','storm-eagle','shadow-wolf','frost-raptor','void-dragon','crimson-kitsune','jade-griffin','snow-leopard','chrono-dragon','crystal-dragon','ember-raptor','azure-drake','crimson-phoenix','storm-griffin','frost-wolf','jade-triceratops','lunar-wyvern','sunfire-tiger']);
 
 function loadHeaderState(): { name: string; selectedAvatar: string } {
   try {
@@ -69,7 +68,6 @@ export default function ProfilePage({ language, t }: Props) {
   const [gems, setGems] = useState(0);
   const [studyMinutes, setStudyMinutes] = useState(0);
   const [completedSessions, setCompletedSessions] = useState(0);
-  const [petName, setPetName] = useState('Sparky');
   const [profile, setProfile] = useState<ProfileData>(() => profileStore.load());
   const [name, setName] = useState(() => loadHeaderState().name);
   const [selectedAvatar, setSelectedAvatar] = useState(() => loadHeaderState().selectedAvatar);
@@ -86,9 +84,15 @@ export default function ProfilePage({ language, t }: Props) {
   const [avatarMessage, setAvatarMessage] = useState('');
 
   useEffect(() => {
+    let cancelled = false;
+    loadPetCatalog().then(items => { if (!cancelled) setCloudPets(items); }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
     if (authLoading) return;
     const local = store.load();
-    setCoins(local.appState.coins); setGems(local.appState.gems); setPetName(local.appState.pet_name);
+    setCoins(local.appState.coins); setGems(local.appState.gems);
     const completed = local.sessions.filter((s) => s.completed);
     setCompletedSessions(completed.length); setStudyMinutes(completed.reduce((sum, s) => sum + s.duration_minutes, 0));
 
@@ -209,6 +213,19 @@ export default function ProfilePage({ language, t }: Props) {
     } finally { if (avatarInputRef.current) avatarInputRef.current.value = ''; }
   };
 
+  const handleAvatarRemove = async () => {
+    if (!profile.avatarUrl) return;
+    if (!window.confirm(language === 'ar' ? 'هل تريد حذف صورة البروفايل؟' : 'Remove your profile picture?')) return;
+    setAvatarMessage('');
+    try {
+      const next = await profileStore.removeAvatar();
+      setProfile(next);
+      setAvatarMessage(language === 'ar' ? 'تم حذف صورة البروفايل.' : 'Profile picture removed.');
+    } catch {
+      setAvatarMessage(language === 'ar' ? 'تعذر حذف الصورة. تحقق من اتصال الإنترنت.' : 'Could not remove the picture. Check your internet connection.');
+    }
+  };
+
   const setAvatarTheme = async (theme: AvatarTheme) => {
     try { setProfile(await profileStore.updateAvatarSettings({ avatarTheme: theme })); } catch { setAvatarMessage(language === 'ar' ? 'تعذر حفظ الثيم.' : 'Could not save theme.'); }
   };
@@ -223,7 +240,7 @@ export default function ProfilePage({ language, t }: Props) {
         <div className="w-full max-w-2xl rounded-3xl glass border border-white/10 p-5 md:p-6 relative overflow-hidden">
           <div className="absolute inset-0 pointer-events-none opacity-80" style={{ background: `radial-gradient(circle at 50% 0%, ${avatarTheme.glow.replace('0.34','0.10')}, transparent 62%)` }} />
           <div className="relative flex flex-col md:flex-row items-center gap-5">
-            <ProfileAvatar avatarUrl={profile.avatarUrl} fallbackPetId={profile.avatarUrl ? (profile.equippedPetId || 'sparky') : selectedAvatar} petPosition={profile.avatarPetPosition} theme={profile.avatarTheme} frameId={profile.equippedSkins.frame} size="lg" onUpload={() => avatarInputRef.current?.click()} />
+            <ProfileAvatar avatarUrl={profile.avatarUrl} fallbackPetId={profile.equippedPetId || selectedAvatar || 'sparky'} petPosition={profile.avatarPetPosition} theme={profile.avatarTheme} frameId={profile.equippedSkins.frame} size="lg" onUpload={() => avatarInputRef.current?.click()} />
             <div className="flex-1 min-w-0 text-center md:text-right">
               <div className="flex items-center justify-center md:justify-start gap-2 flex-wrap">
                 <span className="text-[10px] uppercase tracking-[0.22em] text-neon-cyan">{language === 'ar' ? 'هوية StudyQuest' : 'StudyQuest Identity'}</span>
@@ -233,6 +250,7 @@ export default function ProfilePage({ language, t }: Props) {
               <p className="mt-1 text-xs text-gray-500">{countryCode || city ? `${countryCode || '—'}${city ? ` · ${city}` : ''}` : (language === 'ar' ? 'أضف الدولة والمدينة ليظهر ترتيبك الإقليمي.' : 'Add your country and city for regional ranking.')}</p>
               <div className="mt-4 flex flex-wrap justify-center md:justify-start gap-2">
                 <button type="button" onClick={() => avatarInputRef.current?.click()} className="inline-flex items-center gap-2 px-3 py-2 rounded-xl border border-neon-cyan/30 bg-neon-cyan/10 text-neon-cyan text-xs font-bold"><ImagePlus className="w-4 h-4" />{language === 'ar' ? 'إضافة صورة من الجهاز' : 'Add photo from device'}</button>
+                {profile.avatarUrl && <button type="button" onClick={handleAvatarRemove} className="inline-flex items-center gap-2 px-3 py-2 rounded-xl border border-red-400/40 bg-red-500/10 text-red-300 text-xs font-bold hover:bg-red-500/20">{language === 'ar' ? 'حذف الصورة' : 'Remove photo'}</button>}
                 <span className="inline-flex items-center gap-1 px-3 py-2 rounded-xl border border-white/10 bg-white/[.03] text-xs text-gray-400"><Sparkles className="w-3.5 h-3.5 text-neon-violet" />{language === 'ar' ? `ثيم ${avatarTheme.ar}` : `${avatarTheme.label} theme`}</span>{profile.equippedSkins.frame && <span className="inline-flex items-center gap-1 px-3 py-2 rounded-xl border border-neon-amber/20 bg-neon-amber/5 text-xs text-neon-amber">♛ {language === 'ar' ? 'إطار مجهز حول الصورة' : 'Equipped frame around photo'}</span>}
               </div>
               {avatarMessage && <p className="mt-2 text-[11px] text-neon-emerald">{avatarMessage}</p>}
@@ -406,7 +424,17 @@ export default function ProfilePage({ language, t }: Props) {
                   key={pet.id}
                   className={`group relative rounded-2xl border p-4 flex flex-col items-center gap-2 transition-all duration-300 ${!unlocked ? ((pet.coinPrice > 0 || pet.gemPrice > 0) ? 'border-neon-amber/20 bg-white/[0.025]' : 'border-white/5 bg-white/[0.02] opacity-50') : isEquipped ? `${rarityStyle} cursor-pointer` : `border-white/10 bg-ink-700/40 cursor-pointer ${glowClass} hover:scale-[1.03]`}`}
                 >
-                  {!unlocked && <div className="absolute top-2 right-2 text-gray-500"><Lock className="w-3.5 h-3.5" /></div>}
+                  {pet.premiumOnly && (
+  <div className="absolute top-2 right-2 z-10 inline-flex items-center gap-1 rounded-full border border-violet-300/40 bg-violet-950/95 px-2 py-1 text-[10px] font-black text-violet-200 shadow-lg shadow-violet-500/20">
+    <span aria-hidden="true">♛</span>
+    <span>PREMIUM</span>
+  </div>
+)}
+{!unlocked && !pet.premiumOnly && (
+  <div className="absolute top-2 right-2 text-gray-500">
+    <Lock className="w-3.5 h-3.5" />
+  </div>
+)}
                   {isEquipped && <div className="absolute top-2 left-2 text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-neon-cyan/20 text-neon-cyan border border-neon-cyan/30">{t('equipped')}</div>}
                   <div className={`pet-3d-card-art w-20 h-20 mt-2 overflow-hidden rounded-2xl shrink-0 ${!unlocked ? 'grayscale' : ''} ${isEquipped ? 'is-equipped' : ''}`}><img src={pet.imageUrl || getPetAsset(pet.id)} alt="" className="pet-3d-card-img w-full h-full object-cover" loading="lazy" /></div>
                   <span className={`w-full min-w-0 text-xs leading-4 font-medium text-center break-words ${isEquipped ? textGlow : 'text-gray-200'}`}>{translatePetId(pet.id, language)}</span>

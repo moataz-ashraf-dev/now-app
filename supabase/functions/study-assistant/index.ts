@@ -9,8 +9,12 @@ const corsHeadersFor = (origin: string | null) => ({
   'Vary': 'Origin',
 });
 
-function responseText(ai: any): string {
-  return String(ai?.candidates?.[0]?.content?.parts?.map((part: any) => part?.text ?? '').join('') ?? '').trim();
+type GeminiPart = { text?: string; inline_data?: { mime_type: string; data: string } };
+type GeminiGroundingChunk = { web?: { title?: string; uri?: string } };
+type GeminiResponse = { candidates?: Array<{ content?: { parts?: GeminiPart[] }; groundingMetadata?: { groundingChunks?: GeminiGroundingChunk[] } }> };
+
+function responseText(ai: GeminiResponse): string {
+  return String(ai?.candidates?.[0]?.content?.parts?.map((part) => part?.text ?? '').join('') ?? '').trim();
 }
 
 async function main(req: Request) {
@@ -29,6 +33,8 @@ async function main(req: Request) {
   if (!user) return new Response(JSON.stringify({ error: 'not_authenticated' }), { status: 401, headers: { ...cors, 'Content-Type': 'application/json' } });
 
   const body = await req.json().catch(() => ({}));
+  // Strip control characters before including user input in the provider prompt.
+  // eslint-disable-next-line no-control-regex
   const question = String(body.question ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 4000);
   const language = ['ar','en','ja','fr','de'].includes(String(body.language)) ? String(body.language) : 'en';
   const image = body.image && typeof body.image === 'object' ? body.image : null;
@@ -49,12 +55,12 @@ async function main(req: Request) {
   const languageName = languageNames[language] || 'English';
   const system = `You are StudyQuest Smart Study Assistant. You are a persistent educational assistant inside the app, not just a text generator. Answer entirely in ${languageName}, including placeholders are handled by the client. Help the student understand rather than cheat. Explain clearly with steps and short examples, and solve educational exercises while showing the method. If the student sends an image of a worksheet or question, read and explain it. When a fact may have changed or needs verification, use Google Search and provide openable sources at the end. Never invent sources or claim you searched when you did not. Do not assign grades or pretend to be a human teacher. Stay practical and direct.`;
 
-  const parts: any[] = [{ text: `${system}\n\nStudent question:\n${question}` }];
+  const parts: GeminiPart[] = [{ text: `${system}\n\nStudent question:\n${question}` }];
   if (image) parts.push({ inline_data: { mime_type: String(image.mime_type), data: String(image.data) } });
 
   const needsSearch = /\\b(latest|today|current|recent|news|2026|price|prices|update|updated|who is the current|what happened|this week|this month)\\b|\\b(اخر|آخر|اليوم|حالي|الحالي|حديث|حديثة|أخبار|اخبار|سعر|اسعار|أسعار|تحديث|تحديثات|مين الحالي|ماذا حدث|هذا الأسبوع|هذا الشهر)\\b/i.test(question);
 
-  async function callGemini(useSearch) {
+  async function callGemini(useSearch: boolean): Promise<Response> {
     return await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(aiModel)}:generateContent`, {
       method: 'POST',
       headers: { 'x-goog-api-key': aiKey, 'Content-Type': 'application/json' },
@@ -97,12 +103,12 @@ async function main(req: Request) {
       headers: { ...cors, 'Content-Type': 'application/json' }
     });
   }
-  const ai = await aiResponse.json();
+  const ai = await aiResponse.json() as GeminiResponse;
   const answer = responseText(ai);
   if (!answer) return new Response(JSON.stringify({ error: 'assistant_failed' }), { status: 502, headers: { ...cors, 'Content-Type': 'application/json' } });
 
   const chunks = Array.isArray(ai?.candidates?.[0]?.groundingMetadata?.groundingChunks) ? ai.candidates[0].groundingMetadata.groundingChunks : [];
-  const sources = chunks.map((chunk: any) => ({ title: String(chunk?.web?.title ?? 'Google source').slice(0, 180), uri: String(chunk?.web?.uri ?? '') })).filter((source: { uri: string }) => /^https?:\/\//.test(source.uri)).slice(0, 8);
+  const sources = chunks.map((chunk: GeminiGroundingChunk) => ({ title: String(chunk?.web?.title ?? 'Google source').slice(0, 180), uri: String(chunk?.web?.uri ?? '') })).filter((source: { uri: string }) => /^https?:\/\//.test(source.uri)).slice(0, 8);
   return new Response(JSON.stringify({ answer, sources }), { status: 200, headers: { ...cors, 'Content-Type': 'application/json' } });
 }
 

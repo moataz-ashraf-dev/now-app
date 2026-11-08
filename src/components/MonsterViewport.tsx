@@ -11,7 +11,7 @@ type Props = {
   t: (key: TranslationKey) => string;
 };
 
-export default function MonsterViewport({ pet, equippedSkins, language, t }: Props) {
+export default function MonsterViewport({ pet, equippedSkins, language }: Props) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const [tilt, setTilt] = useState({ x: 0, y: 0 });
 

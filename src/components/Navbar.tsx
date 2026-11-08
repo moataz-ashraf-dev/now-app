@@ -1,6 +1,6 @@
 import React from 'react';
 import {
-  BookOpen, LayoutDashboard, User, Trophy, Sparkles, Globe2, Sun, Moon, Menu, X, Snowflake, Crown, Coins, Gem, Settings,
+  LayoutDashboard, User, Trophy, Globe2, Sun, Moon, Menu, X, Snowflake, Crown, Coins, Gem, Settings,
 } from 'lucide-react';
 import type { LanguageCode, ThemeMode, TranslationKey } from '@/lib/i18n';
 import AccountMenu from '@/components/AccountMenu';
@@ -32,7 +32,7 @@ export default function Navbar({ coins, gems, activeTab, onTabChange, language, 
   const go = (id: string) => { onTabChange(id); setMenuOpen(false); };
 
   return (
-    <header className="fixed top-0 left-0 right-0 z-50 lg:right-auto lg:w-64 lg:h-screen lg:border-r lg:border-b-0 lg:glass lg:flex lg:flex-col">
+    <header className="fixed top-0 left-0 right-0 z-50 lg:right-auto lg:w-64 lg:h-screen lg:border-r lg:border-b-0 lg:glass app-sidebar lg:flex lg:flex-col">
       <div className="flex items-center justify-between gap-3 px-4 md:px-6 lg:px-5 h-14 md:h-16 lg:h-auto lg:py-6 lg:block">
         <button type="button" onClick={() => go('dashboard')} className="flex items-center gap-3 font-display text-lg md:text-xl font-extrabold tracking-tight">
           <span className="relative flex items-center justify-center w-10 h-10 rounded-2xl bg-gradient-to-br from-cyan-300/20 to-violet-500/20 border border-cyan-300/30 shadow-[0_0_24px_rgba(0,205,255,.15)]">

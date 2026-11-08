@@ -1,5 +1,6 @@
 import { isSupabaseConfigured, supabase } from '@/lib/supabase';
 import type { LanguageCode } from '@/lib/i18n';
+import { getActiveUserId, getUserStorageKey } from '@/lib/storageIdentity';
 
 export type StudyPlanTask = {
   id: string;
@@ -32,12 +33,77 @@ export type StudyPlan = {
   tasks?: StudyPlanTask[];
 };
 
+const PLAN_CACHE_KEY = 'studyquest_plan_cache_v1';
+
+type CachedPlans = Record<string, StudyPlan>;
+
+function readCachedPlans(): CachedPlans {
+  try {
+    const raw = localStorage.getItem(getUserStorageKey(PLAN_CACHE_KEY, getActiveUserId()));
+    return raw ? JSON.parse(raw) as CachedPlans : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeCachedPlan(plan: StudyPlan): void {
+  try {
+    const plans = readCachedPlans();
+    plans[plan.plan_date] = plan;
+    localStorage.setItem(getUserStorageKey(PLAN_CACHE_KEY, getActiveUserId()), JSON.stringify(plans));
+  } catch {
+    // Local caching is best effort; server data remains authoritative.
+  }
+}
+
+export function markPlanTaskCompletedLocally(taskId: string): void {
+  const plans = readCachedPlans();
+  const completedAt = new Date().toISOString();
+  let changed = false;
+  for (const [date, plan] of Object.entries(plans)) {
+    const tasks = plan.tasks ?? [];
+    if (!tasks.some((task) => task.id === taskId)) continue;
+    plans[date] = {
+      ...plan,
+      tasks: tasks.map((task) => task.id === taskId
+        ? { ...task, status: 'completed', completed_at: task.completed_at ?? completedAt, updated_at: completedAt }
+        : task),
+      updated_at: completedAt,
+    };
+    changed = true;
+  }
+  if (changed) {
+    try {
+      localStorage.setItem(getUserStorageKey(PLAN_CACHE_KEY, getActiveUserId()), JSON.stringify(plans));
+    } catch {
+      // Best effort only.
+    }
+  }
+}
+
 export async function loadPlan(date: string): Promise<StudyPlan | null> {
-  if (!isSupabaseConfigured) return null;
+  const cached = readCachedPlans()[date] ?? null;
+  if (!isSupabaseConfigured || (typeof navigator !== 'undefined' && !navigator.onLine)) return cached;
   const { data, error } = await supabase.from('study_plans').select('*, study_plan_tasks(*)').eq('plan_date', date).maybeSingle();
-  if (error) throw error;
-  if (!data) return null;
-  return { ...data, tasks: ((data.study_plan_tasks ?? []) as StudyPlanTask[]).sort((a, b) => a.position - b.position) } as StudyPlan;
+  if (error) {
+    if (cached) return cached;
+    throw error;
+  }
+  if (!data) return cached;
+  const serverPlan = { ...data, tasks: ((data.study_plan_tasks ?? []) as StudyPlanTask[]).sort((a, b) => a.position - b.position) } as StudyPlan;
+  const cachedPlan = cached;
+  const cachedTasks = new Map((cachedPlan?.tasks ?? []).map((task) => [task.id, task]));
+  const plan: StudyPlan = {
+    ...serverPlan,
+    tasks: (serverPlan.tasks ?? []).map((task) => {
+      const localTask = cachedTasks.get(task.id);
+      return localTask?.status === 'completed' && task.status !== 'completed'
+        ? { ...task, status: 'completed', completed_at: localTask.completed_at ?? new Date().toISOString(), updated_at: localTask.updated_at }
+        : task;
+    }),
+  };
+  writeCachedPlan(plan);
+  return plan;
 }
 
 export async function generateTomorrowPlan(prompt: string, planDate: string, timezone: string, language: LanguageCode = 'en'): Promise<StudyPlan> {
@@ -59,9 +125,20 @@ export async function generateTomorrowPlan(prompt: string, planDate: string, tim
 }
 
 export async function setTaskStatus(taskId: string, status: Exclude<StudyPlanTask['status'], 'completed'>): Promise<void> {
-  if (!isSupabaseConfigured) return;
+  const plans = readCachedPlans();
+  let changed = false;
+  for (const [date, plan] of Object.entries(plans)) {
+    if (!(plan.tasks ?? []).some((task) => task.id === taskId)) continue;
+    const updatedAt = new Date().toISOString();
+    plans[date] = { ...plan, tasks: (plan.tasks ?? []).map((task) => task.id === taskId ? { ...task, status, completed_at: null, updated_at: updatedAt } : task) };
+    changed = true;
+  }
+  if (changed) {
+    try { localStorage.setItem(getUserStorageKey(PLAN_CACHE_KEY, getActiveUserId()), JSON.stringify(plans)); } catch { /* Best effort only. */ }
+  }
+  if (!isSupabaseConfigured || (typeof navigator !== 'undefined' && !navigator.onLine)) return;
   const userId = (await supabase.auth.getUser()).data.user?.id;
-  if (!userId) throw new Error('not_authenticated');
+  if (!userId) return;
   const { error } = await supabase.from('study_plan_tasks').update({ status, completed_at: null }).eq('id', taskId).eq('user_id', userId);
   if (error) throw error;
 }
@@ -80,17 +157,32 @@ export async function completePlanTask(taskId: string, sessionId: string): Promi
 }
 
 export async function deletePlanTask(taskId: string): Promise<void> {
-  if (!isSupabaseConfigured) return;
-  const { error } = await supabase.rpc('delete_study_plan_task', {
-    p_task_id: taskId,
-  });
-  if (error) {
-    console.error('[StudyQuest] deletePlanTask failed:', error);
-    throw error;
-  }
-}
+  if (!isSupabaseConfigured) throw new Error('Supabase is not configured');
+  if (typeof navigator !== 'undefined' && !navigator.onLine) throw new Error('delete_requires_connection');
+  const userId = (await supabase.auth.getUser()).data.user?.id;
+  if (!userId) throw new Error('not_authenticated');
 
-export type DailyAIStatus = {
+  const { data, error } = await supabase.from('study_plan_tasks')
+    .delete()
+    .eq('id', taskId)
+    .eq('user_id', userId)
+    .select('id')
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) throw new Error('task_not_found_or_not_deleted');
+
+  const plans = readCachedPlans();
+  let changed = false;
+  for (const [date, plan] of Object.entries(plans)) {
+    const tasks = plan.tasks ?? [];
+    if (!tasks.some((task) => task.id === taskId)) continue;
+    plans[date] = { ...plan, tasks: tasks.filter((task) => task.id !== taskId), updated_at: new Date().toISOString() };
+    changed = true;
+  }
+  if (changed) {
+    try { localStorage.setItem(getUserStorageKey(PLAN_CACHE_KEY, getActiveUserId()), JSON.stringify(plans)); } catch { /* Best effort only. */ }
+  }
+}export type DailyAIStatus = {
   plan_date: string;
   has_plan: boolean;
   correct: boolean;

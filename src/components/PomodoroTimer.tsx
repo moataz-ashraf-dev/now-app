@@ -34,12 +34,12 @@ export default function PomodoroTimer({
 
   return (
     <div className="flex flex-col items-center gap-6">
-      <div className="relative w-[320px] h-[320px] flex items-center justify-center">
+      <div className="relative w-[min(320px,calc(100vw-3rem))] aspect-square flex items-center justify-center">
         {/* Rotating neon border when running */}
         {isRunning && (
           <div className="absolute inset-0 rounded-full rotate-border"
             style={{
-              background: 'conic-gradient(from 0deg, transparent 0%, #00f0ff 25%, transparent 50%, #00ff9d 75%, transparent 100%)',
+              background: 'conic-gradient(from 0deg, transparent 0%, var(--sq-accent-cyan) 25%, transparent 50%, var(--sq-accent-green) 75%, transparent 100%)',
               padding: '3px',
               WebkitMask: 'linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)',
               WebkitMaskComposite: 'xor',
@@ -56,7 +56,7 @@ export default function PomodoroTimer({
           }`}
           style={{
             boxShadow: isRunning
-              ? '0 0 30px rgba(0, 240, 255, 0.2), inset 0 0 30px rgba(0, 240, 255, 0.05)'
+              ? '0 0 22px color-mix(in srgb, var(--sq-accent-cyan) 22%, transparent), inset 0 0 22px color-mix(in srgb, var(--sq-accent-cyan) 6%, transparent)'
               : 'none',
           }}
         />
@@ -66,20 +66,20 @@ export default function PomodoroTimer({
           <circle
             cx="160" cy="160" r="140"
             fill="none"
-            stroke="rgba(255,255,255,0.05)"
+            stroke="var(--sq-ring-track)"
             strokeWidth="6"
           />
           <circle
             cx="160" cy="160" r="140"
             fill="none"
-            stroke={isRunning ? '#00f0ff' : '#3a3a3a'}
+            stroke={isRunning ? 'var(--sq-accent-cyan)' : 'var(--sq-ring-idle)'}
             strokeWidth="6"
             strokeLinecap="round"
             strokeDasharray={circumference}
             strokeDashoffset={dashOffset}
             style={{
               transition: 'stroke-dashoffset 1s linear, stroke 0.5s ease',
-              filter: isRunning ? 'drop-shadow(0 0 6px rgba(0, 240, 255, 0.6))' : 'none',
+              filter: isRunning ? 'drop-shadow(0 0 5px color-mix(in srgb, var(--sq-accent-cyan) 28%, transparent))' : 'none',
             }}
           />
         </svg>
@@ -106,9 +106,9 @@ export default function PomodoroTimer({
           <button
             onClick={onStart}
             disabled={!subjectName}
-            className="group flex items-center gap-2 px-8 py-3.5 rounded-2xl font-display font-bold text-base
+            className="group flex items-center gap-2 px-8 py-3.5 rounded-2xl font-display font-bold text-base focus-primary
               bg-gradient-to-r from-neon-cyan/20 to-neon-emerald/20 border border-neon-cyan/40
-              text-neon-cyan neon-border-cyan hover:from-neon-cyan/30 hover:to-neon-emerald/30
+              text-neon-cyan hover:from-neon-cyan/30 hover:to-neon-emerald/30
               transition-all duration-300 hover:scale-105 active:scale-95
               disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:scale-100"
           >
@@ -118,9 +118,9 @@ export default function PomodoroTimer({
         ) : (
           <button
             onClick={onPause}
-            className="group flex items-center gap-2 px-8 py-3.5 rounded-2xl font-display font-bold text-base
+            className="group flex items-center gap-2 px-8 py-3.5 rounded-2xl font-display font-bold text-base focus-pause
               bg-gradient-to-r from-neon-amber/20 to-neon-rose/20 border border-neon-amber/40
-              text-neon-amber neon-border-amber hover:from-neon-amber/30 hover:to-neon-rose/30
+              text-neon-amber hover:from-neon-amber/30 hover:to-neon-rose/30
               transition-all duration-300 hover:scale-105 active:scale-95"
           >
             <Pause className="w-5 h-5 fill-current" />
@@ -129,7 +129,7 @@ export default function PomodoroTimer({
         )}
         <button
           onClick={onReset}
-          className="p-3.5 rounded-2xl border border-white/10 text-gray-400 hover:text-white hover:bg-white/5
+          className="focus-reset p-3.5 rounded-2xl border border-white/10 text-gray-400 hover:text-white hover:bg-white/5
             transition-all duration-300 hover:scale-105 active:scale-95"
         >
           <RotateCcw className="w-5 h-5" />

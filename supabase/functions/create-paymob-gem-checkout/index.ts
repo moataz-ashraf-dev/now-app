@@ -46,6 +46,7 @@ Deno.serve(async (req) => {
     const body = await req.json();
     const packId = String(body.pack || '');
     const paymentMethod = String(body.payment_method || 'cards');
+    if (!['cards', 'apple_pay', 'google_pay', 'wallets'].includes(paymentMethod)) return json({ error: 'invalid_payment_method' }, 400);
     const pack = PACKS[packId];
     const phone = String(body.phone || '').trim();
     if (!pack) return json({ error: 'invalid_gem_pack' }, 400);
@@ -63,10 +64,19 @@ Deno.serve(async (req) => {
     });
     const payload = await intention.json();
     if (!intention.ok || !payload.client_secret) {
-      await admin.from('payment_orders').update({ status: 'failed', provider_payload: payload }).eq('id', order.id);
+      const { error: failRecordError } = await admin.from('payment_orders').update({ status: 'failed', provider_payload: payload }).eq('id', order.id);
+      if (failRecordError) throw failRecordError;
       return json({ error: 'paymob_intention_failed' }, 502);
     }
-    await admin.from('payment_orders').update({ provider_intention_id: payload.id, provider_order_id: payload.intention_order_id, provider_payload: payload }).eq('id', order.id);
+    const safeProviderPayload = { ...payload };
+    delete safeProviderPayload.client_secret;
+    const { error: providerUpdateError } = await admin.from('payment_orders').update({ provider_intention_id: payload.id, provider_order_id: payload.intention_order_id, provider_payload: safeProviderPayload }).eq('id', order.id);
+    if (providerUpdateError) {
+      const { error: failRecordError } = await admin.from('payment_orders').update({ status: 'failed' }).eq('id', order.id);
+      if (failRecordError) console.error('Could not mark unlinked checkout order failed', failRecordError);
+      throw providerUpdateError;
+    }
     return json({ checkoutUrl: `https://accept.paymob.com/unifiedcheckout/?publicKey=${encodeURIComponent(paymobPublic)}&clientSecret=${encodeURIComponent(payload.client_secret)}`, orderId: order.id });
   } catch (e) { console.error(e); return json({ error: e instanceof Error ? e.message : 'checkout_failed' }, 500); }
 });
+

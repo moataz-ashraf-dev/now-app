@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ChevronDown, CloudRain, Waves, VolumeX, Sparkles } from 'lucide-react';
 import { type LanguageCode, type TranslationKey } from '@/lib/i18n';
 
-type AmbientValue = 'none' | 'rain-quiet' | 'rain-thunder' | 'ocean-waves' | 'ocean-birds';
+export type AmbientValue = 'none' | 'rain-quiet' | 'rain-thunder' | 'ocean-waves' | 'ocean-birds';
 
 type Props = {
   value: AmbientValue | string;
@@ -21,7 +21,6 @@ const OPTIONS = [
 
 // Global audio reference so it persists across page navigation (like the timer)
 let globalAudio: HTMLAudioElement | null = null;
-let globalCurrentSound: AmbientValue = 'none';
 
 export default function AmbientSoundWidget({ value, onChange, language }: Props) {
   const [open, setOpen] = useState(false);
@@ -50,7 +49,6 @@ export default function AmbientSoundWidget({ value, onChange, language }: Props)
       globalAudio.pause();
       globalAudio = null;
     }
-    globalCurrentSound = 'none';
     setRunning(false);
   }
 
@@ -64,7 +62,6 @@ export default function AmbientSoundWidget({ value, onChange, language }: Props)
       audio.volume = 0.7;
       audio.play().catch(e => console.log("Audio play error", e));
       globalAudio = audio;
-      globalCurrentSound = kind;
       setRunning(true);
     }
   }

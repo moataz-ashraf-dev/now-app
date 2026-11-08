@@ -218,7 +218,7 @@ async function syncCloud(userId: string): Promise<LocalData> {
     ...local,
     subjects: pendingAfterFlush.some((q) => q.table === 'subjects') ? local.subjects : (cloudSubjects.length ? cloudSubjects : local.subjects),
     streakDays: pendingAfterFlush.some((q) => q.table === 'streak_days') ? local.streakDays : (cloudStreaks.length ? cloudStreaks : local.streakDays),
-    appState: pendingAfterFlush.some((q) => q.table === 'app_state') ? local.appState : { ...(cloudState ?? local.appState), coins: Number(cloudEconomy?.coins ?? cloudState?.coins ?? local.appState.coins), gems: Number(cloudEconomy?.gems ?? cloudState?.gems ?? local.appState.gems) },
+    appState: { ...(pendingAfterFlush.some((q) => q.table === 'app_state') ? local.appState : (cloudState ?? local.appState)), coins: Number(cloudEconomy?.coins ?? cloudState?.coins ?? local.appState.coins), gems: Number(cloudEconomy?.gems ?? cloudState?.gems ?? local.appState.gems) },
     sessions: pendingAfterFlush.some((q) => q.table === 'study_sessions') ? local.sessions : (cloudSessions.length ? cloudSessions : local.sessions),
   };
   writeLocal(merged, userId);
